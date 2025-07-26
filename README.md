@@ -1,11 +1,11 @@
-# Modern WebMail Application
+# Mock SMTP Server and webmail
 
-A sleek, modern webmail application built with Go and Vue.js that acts as an SMTP server and provides a beautiful web interface for viewing emails.
+A SMTP test application built with Go and Vue.js that acts as a SMTP server and provides a web interface for viewing emails. Meant to be used for testing email delivery and test environment.
 
 ## ✨ Features
 
 - **📧 SMTP Server**: Listens on port 25 for incoming emails (no TLS required)
-- **🌐 Modern Web Interface**: Vue.js-based webmail with Tailwind CSS
+- **🌐 Web Interface**: Vue.js-based webmail with Tailwind CSS
 - **🔐 OAuth Authentication**: Google OAuth integration for secure login
 - **📁 Automatic Inbox Management**: Creates inboxes based on email addresses
 - **🗑️ Email Operations**: View and delete emails with a modern interface
@@ -18,7 +18,7 @@ A sleek, modern webmail application built with Go and Vue.js that acts as an SMT
 - **SMTP Server**: go-smtp library
 - **Database**: SQLite with native Go drivers
 - **Frontend**: Vue.js 3 with Composition API
-- **Authentication**: Google OAuth with JWT tokens
+- **Authentication**: OAuth with JWT tokens
 - **Styling**: Tailwind CSS
 - **Build Tool**: Vite
 
@@ -28,7 +28,7 @@ A sleek, modern webmail application built with Go and Vue.js that acts as an SMT
 
 - Go 1.21+
 - Node.js 16+
-- Google OAuth credentials
+- OAuth IDP
 
 ### 1. Setup OAuth Server
 
@@ -131,28 +131,6 @@ Configure your email client to send emails to `localhost:25` with any recipient 
 5. **Delete Emails**: Use the delete button to remove emails
 6. **Send Test Emails**: Use the test script or any SMTP client to send emails to localhost:25
 
-## 📁 Project Structure
-
-```
-webmail/
-├── frontend/                 # Vue.js frontend
-│   ├── src/
-│   │   ├── components/      # Vue components
-│   │   ├── views/          # Vue views
-│   │   ├── stores/         # Pinia stores
-│   │   ├── services/       # API services
-│   │   └── router/         # Vue Router
-│   └── package.json
-├── main.go                  # Main Go application
-├── database.go             # Database operations
-├── smtp.go                 # SMTP server
-├── auth.go                 # OAuth authentication
-├── web.go                  # Web server and API
-├── utils.go                # Utility functions
-├── go.mod                  # Go dependencies
-├── env.example             # Environment template
-└── README.md              # This file
-```
 
 ## 🔧 Configuration
 
