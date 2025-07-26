@@ -12,6 +12,10 @@ A SMTP test application built with Go and Vue.js that acts as a SMTP server and 
 - **💾 SQLite Storage**: Lightweight database for email storage
 - **📱 Responsive Design**: Works on desktop and mobile devices
 
+## 🖼️ Screenshot
+
+![Screenshot of Webmail UI](.github/screenshot.png)
+
 ## 🛠️ Tech Stack
 
 - **Backend**: Go with Gin framework
