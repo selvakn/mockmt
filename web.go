@@ -1,11 +1,11 @@
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,15 +16,8 @@ func startWebServer() error {
 	// Create Gin router
 	r := gin.Default()
 
-	// Configure CORS
-	config := cors.DefaultConfig()
-	config.AllowOrigins = []string{getEnv("FRONTEND_URL", "http://localhost:3000")}
-	config.AllowCredentials = true
-	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
-	r.Use(cors.New(config))
-
 	// Public routes
-	r.GET("/", func(c *gin.Context) {
+	r.GET("/api", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "WebMail API"})
 	})
 
@@ -40,6 +33,46 @@ func startWebServer() error {
 		api.GET("/emails/:id", handleGetEmail)
 		api.DELETE("/emails/:id", handleDeleteEmail)
 		api.GET("/stats", handleGetStats)
+	}
+
+	if getEnv("SERVE_FRONTEND_DIST", "") == "true" {
+		r.Static("/assets", "./frontend/dist/assets")
+
+		r.NoRoute(func(c *gin.Context) {
+			c.File("./frontend/dist/index.html")
+		})
+	} else {
+		r.NoRoute(func(c *gin.Context) {
+			proxyURL := "http://localhost:3002"
+			proxy := func(c *gin.Context) {
+				remote, err := http.NewRequest(c.Request.Method, proxyURL+c.Request.RequestURI, c.Request.Body)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Proxy request creation failed"})
+					return
+				}
+				remote.Header = c.Request.Header
+
+				client := &http.Client{}
+				resp, err := client.Do(remote)
+				if err != nil {
+					c.JSON(http.StatusBadGateway, gin.H{"error": "Proxy request failed"})
+					return
+				}
+				defer resp.Body.Close()
+
+				for k, v := range resp.Header {
+					for _, vv := range v {
+						c.Writer.Header().Add(k, vv)
+					}
+				}
+				c.Writer.WriteHeader(resp.StatusCode)
+				_, err = io.Copy(c.Writer, resp.Body)
+				if err != nil {
+					log.Printf("Error copying response body in proxy: %v", err)
+				}
+			}
+			proxy(c)
+		})
 	}
 
 	port := getEnv("PORT", "8080")

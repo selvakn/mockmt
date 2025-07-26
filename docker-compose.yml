@@ -1,0 +1,14 @@
+services:
+  mockmt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"  # Web server port
+      - "1025:1025"  # SMTP server port
+    volumes:
+      - ./data:/app/data  # Persist database
+      - ./.env:/app/.env  # Mount environment configuration
+    environment:
+      - GIN_MODE=release
+      - FRONTEND_URL=http://localhost:8080

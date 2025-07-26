@@ -1,0 +1,20 @@
+# Git
+.git
+.gitignore
+
+# Project build files
+mockmt
+webmail.db
+
+# Development environment files
+.env
+
+# Frontend build files (will be built in Docker)
+frontend/node_modules
+frontend/dist
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo

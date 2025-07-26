@@ -108,7 +108,7 @@ func sendTestEmail(toEmail, subject, body, htmlBody string) error {
 		toEmail, subject, body, htmlBody)
 
 	// Send email
-	err := smtp.SendMail("localhost:2525", nil, "test@example.com", []string{toEmail}, []byte(message))
+	err := smtp.SendMail("localhost:1025", nil, "test@example.com", []string{toEmail}, []byte(message))
 	if err != nil {
 		return err
 	}
