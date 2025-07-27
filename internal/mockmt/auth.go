@@ -1,4 +1,4 @@
-package main
+package mockmt
 
 import (
 	"bytes"
@@ -47,7 +47,6 @@ func initAuth() {
 	jwtSecretStr := getEnv("JWT_SECRET_KEY", "your-secret-key-change-this")
 	jwtSecret = []byte(jwtSecretStr)
 
-	// Parse scopes
 	scopeList := strings.Split(scopes, " ")
 
 	oauthConfig = &oauth2.Config{
@@ -75,7 +74,6 @@ func handleOAuthCallback(c *gin.Context) {
 	}
 	log.Printf("Received authorization code: %s", code)
 
-	// Exchange code for token
 	token, err := oauthConfig.Exchange(context.Background(), code)
 	if err != nil {
 		log.Printf("Error exchanging code for token: %v", err)
@@ -83,7 +81,6 @@ func handleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Get user info from OAuth server
 	userInfo, err := getUserInfoFromOAuth(token.AccessToken)
 	if err != nil {
 		log.Printf("Error getting user info: %v", err)
@@ -91,7 +88,6 @@ func handleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Create or get user from database
 	user, err := createOrGetUser(userInfo.Email, userInfo.Name, userInfo.Picture)
 	if err != nil {
 		log.Printf("Error creating/getting user: %v", err)
@@ -99,7 +95,6 @@ func handleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Generate JWT token
 	jwtToken, err := generateJWT(user.Email, user.ID)
 	if err != nil {
 		log.Printf("Error generating JWT: %v", err)
@@ -107,7 +102,6 @@ func handleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Redirect to frontend with token
 	frontendURL := getEnv("FRONTEND_URL", "http://localhost:3000")
 	c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/postlogin?token=%s", frontendURL, jwtToken))
 }
@@ -144,7 +138,6 @@ func getUserInfoFromOAuth(accessToken string) (*OAuthUserInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read user info response body: %w", err)
 	}
-	// Re-create reader for subsequent decodes
 	rdr1 := io.NopCloser(bytes.NewBuffer(bodyBytes))
 	rdr2 := io.NopCloser(bytes.NewBuffer(bodyBytes))
 
@@ -153,9 +146,7 @@ func getUserInfoFromOAuth(accessToken string) (*OAuthUserInfo, error) {
 		return nil, err
 	}
 
-	// Handle different OAuth providers that might use different field names
 	if userInfo.Email == "" {
-		// Try alternative field names
 		var altUserInfo map[string]interface{}
 		if err := json.NewDecoder(rdr2).Decode(&altUserInfo); err == nil {
 			if email, ok := altUserInfo["email"].(string); ok {
@@ -170,12 +161,10 @@ func getUserInfoFromOAuth(accessToken string) (*OAuthUserInfo, error) {
 		}
 	}
 
-	// Use preferred_username as fallback for name
 	if userInfo.Name == "" && userInfo.PreferredUsername != "" {
 		userInfo.Name = userInfo.PreferredUsername
 	}
 
-	// Use email as fallback for name if still empty
 	if userInfo.Name == "" {
 		userInfo.Name = userInfo.Email
 	}
@@ -223,7 +212,6 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Extract token from "Bearer <token>"
 		tokenString := authHeader
 		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
 			tokenString = authHeader[7:]
@@ -236,7 +224,6 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Add user info to context
 		c.Set("user_email", claims.Email)
 		c.Set("user_id", claims.UserID)
 		c.Next()

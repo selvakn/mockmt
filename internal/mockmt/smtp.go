@@ -1,4 +1,4 @@
-package main
+package mockmt
 
 import (
 	"errors"
@@ -107,7 +107,7 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-func startSMTPServer() error {
+func StartSMTPServer() error {
 	be := &Backend{}
 
 	s := smtp.NewServer(be)

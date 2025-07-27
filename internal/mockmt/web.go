@@ -1,4 +1,4 @@
-package main
+package mockmt
 
 import (
 	"io"
@@ -9,14 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func startWebServer() error {
-	// Initialize authentication
+func StartWebServer() error {
 	initAuth()
 
-	// Create Gin router
 	r := gin.Default()
 
-	// Public routes
 	r.GET("/api", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "WebMail API"})
 	})
@@ -24,7 +21,6 @@ func startWebServer() error {
 	r.GET("/auth/oauth", handleOAuthLogin)
 	r.GET("/auth/callback", handleOAuthCallback)
 
-	// Protected routes
 	api := r.Group("/api")
 	api.Use(authMiddleware())
 	{

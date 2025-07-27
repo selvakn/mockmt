@@ -1,4 +1,4 @@
-package main
+package mockmt
 
 import (
 	"crypto/rand"
@@ -40,4 +40,4 @@ func truncateText(text string, maxLength int) string {
 		return text
 	}
 	return strings.TrimSpace(text[:maxLength]) + "..."
-} 
+}

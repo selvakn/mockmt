@@ -1,4 +1,4 @@
-module webmail
+module mockmt
 
 go 1.24.5
 

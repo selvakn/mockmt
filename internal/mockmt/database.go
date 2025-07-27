@@ -1,4 +1,4 @@
-package main
+package mockmt
 
 import (
 	"database/sql"
@@ -31,7 +31,7 @@ type Email struct {
 	UserID     int       `json:"user_id"`
 }
 
-func initDatabase() error {
+func InitDatabase() error {
 	var err error
 	dbPath := getEnv("DATABASE_URL", "./webmail.db")
 	db, err = sql.Open("sqlite3", dbPath)

@@ -6,10 +6,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY *.go ./
+COPY internal/ ./internal/
 
-RUN CGO_ENABLED=1 GOOS=linux go build -o mockmt .
+RUN GOOS=linux go build -o mockmt .
 
-FROM node:20 AS frontend-builder
+FROM node:24 AS frontend-builder
 
 WORKDIR /app/frontend
 
