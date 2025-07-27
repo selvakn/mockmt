@@ -20,21 +20,13 @@ COPY frontend/ ./
 
 RUN npm run build
 
-FROM debian:bookworm-slim
+FROM gcr.io/distroless/base-debian12
 
 WORKDIR /app
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend-builder /app/mockmt .
 
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-
-RUN mkdir -p /app/data
 
 COPY env.example .env
 
