@@ -16,6 +16,22 @@ A SMTP test application built with Go and Vue.js that acts as a SMTP server and 
 
 ![Screenshot of Webmail UI](.github/screenshot.png)
 
+## 📝 How to use
+```
+docker run --rm                         \
+    -v ./data:/data                     \
+    -e DATABASE_URL=/data/mockmt.db     \
+    -e SMTP_PORT=2525                   \
+    -e PORT=8080                        \
+    -e JWT_SECRET_KEY=s3cr3t            \
+    -e OAUTH_CLIENT_ID=<client-id>      \
+    -e OAUTH_CLIENT_SECRET=<secret>     \
+    -e OAUTH_AUTH_URL=<url-/auth>       \
+    -e OAUTH_TOKEN_URL=<url-/token>     \
+    -e OAUTH_USERINFO_URL=<url-userinfo>\
+    -e OAUTH_REDIRECT_URI=https://<APP-BASE-URL>/auth/callback  \
+    ghcr.io/selvakn/mockmt:1.0.2
+```
 ## 🛠️ Tech Stack
 
 - **Backend**: Go with Gin framework
