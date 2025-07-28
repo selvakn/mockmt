@@ -8,10 +8,10 @@
           </svg>
         </div>
         <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          Welcome to WebMail
+          Welcome to MockMT
         </h2>
         <p class="mt-2 text-center text-sm text-gray-600">
-          Your modern email client
+          Modern SMTP test application for email delivery testing
         </p>
       </div>
       
@@ -30,7 +30,7 @@
         
                   <div class="text-center">
             <p class="text-sm text-gray-500">
-              Secure authentication powered by OAuth
+              MockMT (Mock Mail) &mdash; <a href="https://github.com/selvakn/mockmt" target="_blank" class="text-primary-600 hover:underline">GitHub</a><br/>
             </p>
           </div>
       </div>

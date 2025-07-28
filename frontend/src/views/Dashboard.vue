@@ -25,6 +25,10 @@
         />
       </div>
     </div>
+    <footer class="w-full text-center py-4 text-gray-500 text-xs bg-white border-t border-gray-200">
+      MockMT (Email Mock) &mdash; <a href="https://github.com/selvakn/mockmt" target="_blank" class="text-primary-600 hover:underline">GitHub</a><br/>
+      Modern SMTP test application for email delivery testing. Built with Go, Vue.js, and Tailwind CSS.
+    </footer>
   </div>
 </template>
 

@@ -10,7 +10,7 @@
             </svg>
           </div>
           <div class="ml-3">
-            <h1 class="text-xl font-semibold text-gray-900">WebMail</h1>
+            <h1 class="text-xl font-semibold text-gray-900">MockMT (Mock Mail)</h1>
             <p class="text-sm text-gray-500">{{ user?.email }}</p>
           </div>
         </div>
