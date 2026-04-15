@@ -48,21 +48,41 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-      # Snyk container SARIF can include rules with a null `security-severity`,
-      # which GitHub Code Scanning rejects. Replace those nulls with "0"
-      # using sed (robust to arbitrary SARIF nesting), then sanity-check.
+      # Snyk container SARIF can include rules with a missing or
+      # non-numeric `security-severity`, which GitHub Code Scanning
+      # rejects. Coerce any missing/null/non-numeric value to "0".
       - name: Sanitize Snyk Container SARIF
         run: |
           if [ ! -s snyk-container.sarif ]; then
             echo "snyk-container.sarif is empty or missing — skipping sanitize."
             exit 0
           fi
-          before=$(grep -c '"security-severity": *null' snyk-container.sarif || true)
-          sed -i 's/"security-severity": *null/"security-severity": "0"/g' snyk-container.sarif
-          after=$(grep -c '"security-severity": *null' snyk-container.sarif || true)
-          echo "Replaced null security-severity values: before=$before after=$after"
-          # Verify file is still valid JSON
+          echo "=== Unique security-severity values before sanitize ==="
+          jq -r '[.. | objects | select(has("security-severity")) | ."security-severity"] | unique | .[]' snyk-container.sarif || true
+          jq '
+            def fix_sev:
+              if . == null then "0"
+              elif type == "string" and (test("^[0-9]+(\\.[0-9]+)?$")) then .
+              elif type == "number" then (. | tostring)
+              else "0" end;
+            walk(
+              if type == "object" and (.id? and .shortDescription?) then
+                .properties = ((.properties // {}) | ."security-severity" |= fix_sev)
+              else . end
+            )
+          ' snyk-container.sarif > snyk-container.sarif.tmp
+          mv snyk-container.sarif.tmp snyk-container.sarif
+          echo "=== Unique security-severity values after sanitize ==="
+          jq -r '[.. | objects | select(has("security-severity")) | ."security-severity"] | unique | .[]' snyk-container.sarif || true
           jq -e . snyk-container.sarif > /dev/null
+
+      - name: Upload sanitized SARIF as artifact (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-container-sarif
+          path: snyk-container.sarif
+          if-no-files-found: ignore
 
       - name: Upload Snyk Container results
         uses: github/codeql-action/upload-sarif@v4
