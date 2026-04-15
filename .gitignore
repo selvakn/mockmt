@@ -1,3 +1,16 @@
 .env
 *.db
 mockmt
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
