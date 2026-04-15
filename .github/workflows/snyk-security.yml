@@ -49,11 +49,12 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       # Snyk container SARIF can include rules with a null `security-severity`,
-      # which GitHub Code Scanning rejects. Replace nulls with "0" before upload.
+      # which GitHub Code Scanning rejects. Recursively replace any null
+      # `security-severity` value (and drop missing ones) before upload.
       - name: Sanitize Snyk Container SARIF
         run: |
           if [ -s snyk-container.sarif ]; then
-            jq '(.runs[]?.tool.driver.rules[]?.properties."security-severity") |= (if . == null then "0" else . end)' \
+            jq 'walk(if type == "object" and has("security-severity") and (."security-severity" == null) then ."security-severity" = "0" else . end)' \
               snyk-container.sarif > snyk-container.sarif.tmp
             mv snyk-container.sarif.tmp snyk-container.sarif
           fi
