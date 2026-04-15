@@ -49,15 +49,20 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       # Snyk container SARIF can include rules with a null `security-severity`,
-      # which GitHub Code Scanning rejects. Recursively replace any null
-      # `security-severity` value (and drop missing ones) before upload.
+      # which GitHub Code Scanning rejects. Replace those nulls with "0"
+      # using sed (robust to arbitrary SARIF nesting), then sanity-check.
       - name: Sanitize Snyk Container SARIF
         run: |
-          if [ -s snyk-container.sarif ]; then
-            jq 'walk(if type == "object" and has("security-severity") and (."security-severity" == null) then ."security-severity" = "0" else . end)' \
-              snyk-container.sarif > snyk-container.sarif.tmp
-            mv snyk-container.sarif.tmp snyk-container.sarif
+          if [ ! -s snyk-container.sarif ]; then
+            echo "snyk-container.sarif is empty or missing — skipping sanitize."
+            exit 0
           fi
+          before=$(grep -c '"security-severity": *null' snyk-container.sarif || true)
+          sed -i 's/"security-severity": *null/"security-severity": "0"/g' snyk-container.sarif
+          after=$(grep -c '"security-severity": *null' snyk-container.sarif || true)
+          echo "Replaced null security-severity values: before=$before after=$after"
+          # Verify file is still valid JSON
+          jq -e . snyk-container.sarif > /dev/null
 
       - name: Upload Snyk Container results
         uses: github/codeql-action/upload-sarif@v4
