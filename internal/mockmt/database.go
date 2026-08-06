@@ -160,7 +160,7 @@ func getEmailsByUser(userID int) ([]Email, error) {
 	if err != nil {
 		return []Email{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	emails := []Email{}
 	for rows.Next() {

@@ -54,7 +54,7 @@ func StartWebServer() error {
 					c.JSON(http.StatusBadGateway, gin.H{"error": "Proxy request failed"})
 					return
 				}
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 
 				for k, v := range resp.Header {
 					for _, vv := range v {
