@@ -16,6 +16,10 @@ func main() {
 		log.Println("No .env file found, using system environment variables")
 	}
 
+	if _, _, err := mockmt.LoadSMTPCredentials(); err != nil {
+		log.Fatal("SMTP authentication is not configured:", err)
+	}
+
 	if err := mockmt.InitDatabase(); err != nil {
 		log.Fatal("Failed to initialize database:", err)
 	}

@@ -6,6 +6,8 @@ import (
 	"net/smtp"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -28,8 +30,9 @@ func main() {
 	username = strings.TrimSpace(username)
 
 	fmt.Print("Enter SMTP password: ")
-	password, _ := reader.ReadString('\n')
-	password = strings.TrimSpace(password)
+	passwordBytes, _ := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	password := strings.TrimSpace(string(passwordBytes))
 
 	// Email content
 	subject := "Test Email from WebMail"

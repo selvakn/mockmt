@@ -1,6 +1,7 @@
 package mockmt
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -36,11 +37,13 @@ func (s *Session) AuthMechanisms() []string {
 
 func (s *Session) Auth(mech string) (sasl.Server, error) {
 	return sasl.NewPlainServer(func(identity, username, password string) error {
-		if username != s.backend.Username || password != s.backend.Password {
-			log.Printf("SMTP auth failed: user=%s", username)
+		validUsername := subtle.ConstantTimeCompare([]byte(username), []byte(s.backend.Username))
+		validPassword := subtle.ConstantTimeCompare([]byte(password), []byte(s.backend.Password))
+		if validUsername&validPassword != 1 {
+			log.Printf("SMTP auth failed: user=%q", username)
 			return smtp.ErrAuthFailed
 		}
-		log.Printf("SMTP auth succeeded: user=%s", username)
+		log.Printf("SMTP auth succeeded: user=%q", username)
 		s.authenticated = true
 		return nil
 	}), nil
@@ -129,7 +132,9 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-func loadSMTPCredentials() (string, string, error) {
+// LoadSMTPCredentials reads the required SMTP_USERNAME/SMTP_PASSWORD
+// configuration. Callers should treat a non-nil error as fatal.
+func LoadSMTPCredentials() (string, string, error) {
 	username := getEnv("SMTP_USERNAME", "")
 	password := getEnv("SMTP_PASSWORD", "")
 
@@ -144,9 +149,9 @@ func loadSMTPCredentials() (string, string, error) {
 }
 
 func StartSMTPServer() error {
-	username, password, err := loadSMTPCredentials()
+	username, password, err := LoadSMTPCredentials()
 	if err != nil {
-		log.Fatalf("SMTP authentication is not configured: %v", err)
+		return fmt.Errorf("SMTP authentication is not configured: %w", err)
 	}
 
 	be := &Backend{Username: username, Password: password}

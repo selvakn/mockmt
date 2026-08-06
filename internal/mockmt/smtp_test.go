@@ -1,6 +1,8 @@
 package mockmt
 
 import (
+	"net"
+	netsmtp "net/smtp"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,13 +127,126 @@ func TestAuthenticatedSessionCanSendMultipleMessages(t *testing.T) {
 	}
 }
 
+func TestSessionAdvertisesPlainMechanismOnly(t *testing.T) {
+	s := &Session{backend: &Backend{Username: "user", Password: "pass"}}
+
+	got := s.AuthMechanisms()
+	if len(got) != 1 || got[0] != sasl.Plain {
+		t.Fatalf("got %v, want [%s]", got, sasl.Plain)
+	}
+}
+
+// Wire-protocol integration tests: drive a real Backend through go-smtp's
+// Server/Serve against the standard library's net/smtp client, so the
+// AuthSession wiring (capability advertisement + response codes) is
+// exercised end-to-end rather than only through direct method calls.
+
+func startTestSMTPServer(t *testing.T, username, password string) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	srv := smtp.NewServer(&Backend{Username: username, Password: password})
+	srv.Domain = "localhost"
+	srv.AllowInsecureAuth = true
+
+	go func() {
+		_ = srv.Serve(l)
+	}()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	return l.Addr().String()
+}
+
+func TestWireProtocolAdvertisesAuthAndRejectsUnauthenticatedMail(t *testing.T) {
+	setupTestDB(t)
+	addr := startTestSMTPServer(t, "devbox", "s3cr3t")
+
+	c, err := netsmtp.Dial(addr)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if err := c.Hello("localhost"); err != nil {
+		t.Fatalf("EHLO failed: %v", err)
+	}
+
+	ok, params := c.Extension("AUTH")
+	if !ok || !strings.Contains(params, "PLAIN") {
+		t.Fatalf("expected server to advertise AUTH PLAIN, got ok=%v params=%q", ok, params)
+	}
+
+	err = c.Mail("sender@example.com")
+	if err == nil {
+		t.Fatal("expected MAIL FROM to be rejected before authentication")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("expected a 502 response, got: %v", err)
+	}
+	if got := countEmails(t); got != 0 {
+		t.Fatalf("expected no emails stored, got %d", got)
+	}
+}
+
+func TestWireProtocolRejectsBadCredentials(t *testing.T) {
+	addr := startTestSMTPServer(t, "devbox", "s3cr3t")
+
+	c, err := netsmtp.Dial(addr)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if err := c.Hello("localhost"); err != nil {
+		t.Fatalf("EHLO failed: %v", err)
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("failed to split addr: %v", err)
+	}
+
+	auth := netsmtp.PlainAuth("", "devbox", "wrong-password", host)
+	err = c.Auth(auth)
+	if err == nil {
+		t.Fatal("expected authentication with the wrong password to fail")
+	}
+	if !strings.Contains(err.Error(), "535") {
+		t.Fatalf("expected a 535 response, got: %v", err)
+	}
+}
+
+func TestWireProtocolAcceptsAuthenticatedMail(t *testing.T) {
+	setupTestDB(t)
+	addr := startTestSMTPServer(t, "devbox", "s3cr3t")
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("failed to split addr: %v", err)
+	}
+
+	auth := netsmtp.PlainAuth("", "devbox", "s3cr3t", host)
+	msg := []byte("Subject: Hello\r\n\r\nHello world\r\n")
+	if err := netsmtp.SendMail(addr, auth, "sender@example.com", []string{"recipient@localhost"}, msg); err != nil {
+		t.Fatalf("SendMail failed: %v", err)
+	}
+
+	if got := countEmails(t); got != 1 {
+		t.Fatalf("expected 1 email stored, got %d", got)
+	}
+}
+
 // US3: operator-configured SMTP credentials via environment variables.
 
 func TestLoadSMTPCredentials(t *testing.T) {
 	t.Run("missing username", func(t *testing.T) {
 		t.Setenv("SMTP_USERNAME", "")
 		t.Setenv("SMTP_PASSWORD", "pass")
-		if _, _, err := loadSMTPCredentials(); err == nil {
+		if _, _, err := LoadSMTPCredentials(); err == nil {
 			t.Fatal("expected error when SMTP_USERNAME is unset")
 		}
 	})
@@ -139,7 +254,7 @@ func TestLoadSMTPCredentials(t *testing.T) {
 	t.Run("missing password", func(t *testing.T) {
 		t.Setenv("SMTP_USERNAME", "user")
 		t.Setenv("SMTP_PASSWORD", "")
-		if _, _, err := loadSMTPCredentials(); err == nil {
+		if _, _, err := LoadSMTPCredentials(); err == nil {
 			t.Fatal("expected error when SMTP_PASSWORD is unset")
 		}
 	})
@@ -147,7 +262,7 @@ func TestLoadSMTPCredentials(t *testing.T) {
 	t.Run("both set", func(t *testing.T) {
 		t.Setenv("SMTP_USERNAME", "user")
 		t.Setenv("SMTP_PASSWORD", "pass")
-		username, password, err := loadSMTPCredentials()
+		username, password, err := LoadSMTPCredentials()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
