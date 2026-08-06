@@ -5,6 +5,7 @@ A SMTP test application built with Go and Vue.js that acts as a SMTP server and 
 ## ✨ Features
 
 - **📧 SMTP Server**: Listens on port 25 for incoming emails (no TLS required)
+- **🔒 SMTP Authentication**: Requires a configured username/password (`AUTH PLAIN`) before accepting mail
 - **🌐 Web Interface**: Vue.js-based webmail with Tailwind CSS
 - **🔐 OAuth Authentication**: Google OAuth integration for secure login
 - **📁 Automatic Inbox Management**: Creates inboxes based on email addresses
@@ -22,6 +23,8 @@ docker run --rm                         \
     -v ./data:/data                     \
     -e DATABASE_URL=/data/mockmt.db     \
     -e SMTP_PORT=2525                   \
+    -e SMTP_USERNAME=<smtp-username>    \
+    -e SMTP_PASSWORD=<smtp-password>    \
     -e PORT=8080                        \
     -e JWT_SECRET_KEY=s3cr3t            \
     -e OAUTH_CLIENT_ID=<client-id>      \
@@ -93,7 +96,11 @@ OAUTH_USERINFO_URL=https://your-oauth-server/auth/realms/your-realm/protocol/ope
 OAUTH_REDIRECT_URI=http://localhost:8080/auth/callback
 OAUTH_SCOPES=openid email profile
 JWT_SECRET_KEY=your_jwt_secret_key_here
+SMTP_USERNAME=your_smtp_username_here
+SMTP_PASSWORD=your_smtp_password_here
 ```
+
+The SMTP server requires `SMTP_USERNAME` and `SMTP_PASSWORD` to be set — it will refuse to start otherwise.
 
 ### 4. Start the Application
 
@@ -117,30 +124,23 @@ npm run dev
 ### Using the Test Script
 
 ```bash
-go run test_email.go
+go run ./cmd/test_email
 ```
+
+You'll be prompted for the recipient address and your configured `SMTP_USERNAME`/`SMTP_PASSWORD`.
 
 ### Using Command Line
 
-```bash
-# Send a test email using telnet
-telnet localhost 25
-EHLO localhost
-MAIL FROM: test@example.com
-RCPT TO: your-email@localhost
-DATA
-Subject: Test Email
-From: test@example.com
-To: your-email@localhost
+The server requires authentication, so a plain `telnet` session must issue `AUTH PLAIN` (base64-encoded `\0username\0password`) before `MAIL FROM` will be accepted. It's easier to test with an SMTP client library, e.g. Go's standard library:
 
-Hello! This is a test email.
-.
-QUIT
+```go
+auth := smtp.PlainAuth("", "your_smtp_username", "your_smtp_password", "localhost")
+smtp.SendMail("localhost:25", auth, "test@example.com", []string{"your-email@localhost"}, message)
 ```
 
 ### Using Email Clients
 
-Configure your email client to send emails to `localhost:25` with any recipient address ending in `@localhost`.
+Configure your email client to send emails to `localhost:25` using your configured `SMTP_USERNAME`/`SMTP_PASSWORD`, with any recipient address ending in `@localhost`.
 
 ## 🎯 Usage
 
@@ -169,6 +169,8 @@ Configure your email client to send emails to `localhost:25` with any recipient 
 | `DATABASE_URL` | Database path | `./webmail.db` |
 | `PORT` | Web server port | `8080` |
 | `SMTP_PORT` | SMTP server port | `25` |
+| `SMTP_USERNAME` | SMTP `AUTH PLAIN` username | Required |
+| `SMTP_PASSWORD` | SMTP `AUTH PLAIN` password | Required |
 | `FRONTEND_URL` | Frontend URL | `http://localhost:3000` |
 
 ### Ports
@@ -179,6 +181,8 @@ Configure your email client to send emails to `localhost:25` with any recipient 
 
 ## 🛡️ Security Notes
 
+- The SMTP server requires `AUTH PLAIN` authentication with the configured `SMTP_USERNAME`/`SMTP_PASSWORD` before it will accept any mail; the server refuses to start if these are not configured
+- Credentials are sent in plaintext (no STARTTLS/TLS) — only expose the SMTP port on trusted/internal networks
 - The SMTP server only accepts emails for `@localhost` addresses
 - OAuth authentication ensures only authorized users can access emails
 - JWT tokens are used for session management

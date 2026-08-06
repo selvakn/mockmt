@@ -1,6 +1,6 @@
 .env
 *.db
-mockmt
+/mockmt
 
 # Frontend build artifacts
 frontend/node_modules/

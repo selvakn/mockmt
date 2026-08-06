@@ -2,32 +2,54 @@ package mockmt
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"strings"
 
 	"github.com/emersion/go-message/mail"
+	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 )
 
 var ErrInvalidAddress = errors.New("invalid address")
 
-type Backend struct{}
+type Backend struct {
+	Username string
+	Password string
+}
 
 func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
-	return &Session{}, nil
+	return &Session{backend: bkd}, nil
 }
 
 type Session struct {
-	from string
-	to   []string
+	backend       *Backend
+	authenticated bool
+	from          string
+	to            []string
 }
 
-func (s *Session) AuthPlain(username, password string) error {
-	return nil // No authentication required
+func (s *Session) AuthMechanisms() []string {
+	return []string{sasl.Plain}
+}
+
+func (s *Session) Auth(mech string) (sasl.Server, error) {
+	return sasl.NewPlainServer(func(identity, username, password string) error {
+		if username != s.backend.Username || password != s.backend.Password {
+			log.Printf("SMTP auth failed: user=%s", username)
+			return smtp.ErrAuthFailed
+		}
+		log.Printf("SMTP auth succeeded: user=%s", username)
+		s.authenticated = true
+		return nil
+	}), nil
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	if !s.authenticated {
+		return smtp.ErrAuthRequired
+	}
 	s.from = from
 	return nil
 }
@@ -107,8 +129,27 @@ func (s *Session) Logout() error {
 	return nil
 }
 
+func loadSMTPCredentials() (string, string, error) {
+	username := getEnv("SMTP_USERNAME", "")
+	password := getEnv("SMTP_PASSWORD", "")
+
+	if username == "" {
+		return "", "", fmt.Errorf("SMTP_USERNAME is not set")
+	}
+	if password == "" {
+		return "", "", fmt.Errorf("SMTP_PASSWORD is not set")
+	}
+
+	return username, password, nil
+}
+
 func StartSMTPServer() error {
-	be := &Backend{}
+	username, password, err := loadSMTPCredentials()
+	if err != nil {
+		log.Fatalf("SMTP authentication is not configured: %v", err)
+	}
+
+	be := &Backend{Username: username, Password: password}
 
 	s := smtp.NewServer(be)
 

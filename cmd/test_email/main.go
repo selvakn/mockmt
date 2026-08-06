@@ -22,6 +22,15 @@ func main() {
 		toEmail = "test@localhost"
 	}
 
+	// Get SMTP credentials
+	fmt.Print("Enter SMTP username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	fmt.Print("Enter SMTP password: ")
+	password, _ := reader.ReadString('\n')
+	password = strings.TrimSpace(password)
+
 	// Email content
 	subject := "Test Email from WebMail"
 	body := `Hello!
@@ -77,7 +86,7 @@ WebMail Test System`
 	fmt.Println()
 
 	// Send email
-	if err := sendTestEmail(toEmail, subject, body, htmlBody); err != nil {
+	if err := sendTestEmail(toEmail, subject, body, htmlBody, username, password); err != nil {
 		fmt.Printf("❌ Failed to send email: %v\n", err)
 		return
 	}
@@ -86,7 +95,7 @@ WebMail Test System`
 	fmt.Printf("   Login to the web interface and look for emails to: %s\n", toEmail)
 }
 
-func sendTestEmail(toEmail, subject, body, htmlBody string) error {
+func sendTestEmail(toEmail, subject, body, htmlBody, username, password string) error {
 	// Create email message
 	message := fmt.Sprintf("From: test@example.com\r\n"+
 		"To: %s\r\n"+
@@ -108,7 +117,8 @@ func sendTestEmail(toEmail, subject, body, htmlBody string) error {
 		toEmail, subject, body, htmlBody)
 
 	// Send email
-	err := smtp.SendMail("localhost:1025", nil, "test@example.com", []string{toEmail}, []byte(message))
+	auth := smtp.PlainAuth("", username, password, "localhost")
+	err := smtp.SendMail("localhost:1025", auth, "test@example.com", []string{toEmail}, []byte(message))
 	if err != nil {
 		return err
 	}
