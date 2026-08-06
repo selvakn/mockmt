@@ -12,3 +12,4 @@ services:
     environment:
       - GIN_MODE=release
       - FRONTEND_URL=http://localhost:8080
+    mem_limit: 256m

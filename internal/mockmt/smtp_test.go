@@ -28,6 +28,24 @@ func countEmails(t *testing.T) int {
 	return count
 }
 
+func countQueuedMessages(t *testing.T) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM queued_messages").Scan(&count); err != nil {
+		t.Fatalf("failed to count queued messages: %v", err)
+	}
+	return count
+}
+
+func countUsers(t *testing.T) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		t.Fatalf("failed to count users: %v", err)
+	}
+	return count
+}
+
 func authenticate(t *testing.T, s *Session, username, password string) {
 	t.Helper()
 	srv, err := s.Auth(sasl.Plain)
@@ -237,6 +255,59 @@ func TestWireProtocolAcceptsAuthenticatedMail(t *testing.T) {
 
 	if got := countEmails(t); got != 1 {
 		t.Fatalf("expected 1 email stored, got %d", got)
+	}
+}
+
+// US2 (capture-only regression, SC-001): with relay mode disabled, ingest
+// must behave exactly as it does today -- write to emails, create the
+// recipient's user account, and write nothing to the relay tables.
+func TestCaptureOnlyModeUnaffectedByRelaySchema(t *testing.T) {
+	setupTestDB(t)
+	setRelayConfigForTest(t, &RelayConfig{Enabled: false})
+
+	s := &Session{backend: &Backend{Username: "user", Password: "pass"}}
+	authenticate(t, s, "user", "pass")
+	sendTestMessage(t, s)
+
+	if got := countEmails(t); got != 1 {
+		t.Fatalf("expected 1 email stored in emails, got %d", got)
+	}
+	if got := countUsers(t); got != 1 {
+		t.Fatalf("expected 1 user auto-created for the recipient, got %d", got)
+	}
+	if got := countQueuedMessages(t); got != 0 {
+		t.Fatalf("expected 0 rows in queued_messages with relay disabled, got %d", got)
+	}
+}
+
+// US1: with relay mode enabled, ingest queues the complete raw message
+// for review instead of capturing it, and creates no portal user for the
+// recipient (FR-007, FR-018a).
+func TestRelayModeQueuesInsteadOfCapturing(t *testing.T) {
+	setupTestDB(t)
+	setRelayConfigForTest(t, &RelayConfig{Enabled: true})
+
+	s := &Session{backend: &Backend{Username: "user", Password: "pass"}}
+	authenticate(t, s, "user", "pass")
+
+	if err := s.Mail("agent@myapp.local", &smtp.MailOptions{}); err != nil {
+		t.Fatalf("Mail failed: %v", err)
+	}
+	if err := s.Rcpt("customer@example.com", &smtp.RcptOptions{}); err != nil {
+		t.Fatalf("Rcpt failed: %v", err)
+	}
+	if err := s.Data(strings.NewReader("Subject: Hello\r\nFrom: agent@myapp.local\r\nTo: customer@example.com\r\n\r\nHello world\r\n")); err != nil {
+		t.Fatalf("Data failed: %v", err)
+	}
+
+	if got := countEmails(t); got != 0 {
+		t.Fatalf("expected 0 rows in emails with relay enabled, got %d", got)
+	}
+	if got := countQueuedMessages(t); got != 1 {
+		t.Fatalf("expected 1 queued message, got %d", got)
+	}
+	if got := countUsers(t); got != 0 {
+		t.Fatalf("expected 0 users created for the external recipient, got %d", got)
 	}
 }
 

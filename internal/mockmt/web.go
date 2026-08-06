@@ -29,6 +29,24 @@ func StartWebServer() error {
 		api.GET("/emails/:id", handleGetEmail)
 		api.DELETE("/emails/:id", handleDeleteEmail)
 		api.GET("/stats", handleGetStats)
+
+		// GET /relay/status is deliberately registered outside the relay
+		// group below: it must respond even when relay mode is disabled
+		// (so the portal can discover that) and for any authenticated
+		// user (so the portal can tell reviewers apart from everyone
+		// else), not just reviewers.
+		api.GET("/relay/status", handleRelayStatus)
+
+		relay := api.Group("/relay")
+		relay.Use(relayModeGate(), requireReviewer())
+		{
+			relay.GET("/queue", handleRelayQueue)
+			relay.GET("/messages/:id", handleRelayMessageDetail)
+			relay.GET("/messages/:id/attachments/:index", handleRelayAttachment)
+			relay.POST("/messages/:id/send", handleRelaySend)
+			relay.POST("/messages/:id/reject", handleRelayReject)
+			relay.GET("/messages/:id/audit", handleRelayAudit)
+		}
 	}
 
 	if getEnv("SERVE_FRONTEND_DIST", "") == "true" {
