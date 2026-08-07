@@ -43,10 +43,15 @@ type sendResult struct {
 // (system roots) when none was provided. There is deliberately no option
 // to skip certificate verification (research R18).
 func tlsClientConfigFor(cfg *RelayConfig) *tls.Config {
-	if cfg.TLSConfig != nil {
-		return cfg.TLSConfig
+	tlsConfig := cfg.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
 	}
-	return &tls.Config{}
+	if tlsConfig.ServerName == "" {
+		tlsConfig = tlsConfig.Clone() // cfg.TLSConfig is shared across concurrent relaySend calls; never mutate in place
+		tlsConfig.ServerName = cfg.Host
+	}
+	return tlsConfig
 }
 
 // relaySend connects to the configured upstream and attempts to deliver

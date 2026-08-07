@@ -1,10 +1,39 @@
 package mockmt
 
 import (
+	"crypto/tls"
 	"net"
 	"testing"
 	"time"
 )
+
+// TestTLSClientConfigForSetsServerNameWhenAbsent guards against a real
+// bug found while building the e2e relay test rig: without ServerName
+// set, x509.Certificate.Verify skips VerifyHostname entirely (see
+// GOROOT crypto/x509/verify.go), so hostname verification was silently
+// never happening even though chain-of-trust was.
+func TestTLSClientConfigForSetsServerNameWhenAbsent(t *testing.T) {
+	cfg := &RelayConfig{Host: "fake-upstream", TLSConfig: &tls.Config{}}
+
+	got := tlsClientConfigFor(cfg)
+
+	if got.ServerName != "fake-upstream" {
+		t.Fatalf("expected ServerName to be filled in from cfg.Host, got %q", got.ServerName)
+	}
+	if cfg.TLSConfig.ServerName != "" {
+		t.Fatalf("tlsClientConfigFor must not mutate the shared RelayConfig.TLSConfig in place")
+	}
+}
+
+func TestTLSClientConfigForLeavesExplicitServerNameUntouched(t *testing.T) {
+	cfg := &RelayConfig{Host: "fake-upstream", TLSConfig: &tls.Config{ServerName: "127.0.0.1"}}
+
+	got := tlsClientConfigFor(cfg)
+
+	if got.ServerName != "127.0.0.1" {
+		t.Fatalf("expected explicit ServerName to be preserved, got %q", got.ServerName)
+	}
+}
 
 func relayConfigForUpstream(t *testing.T, up fakeUpstream) *RelayConfig {
 	t.Helper()
