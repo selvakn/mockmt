@@ -79,7 +79,7 @@
                 </button>
               </div>
               <div v-if="a.previewable" class="mt-2">
-                <button v-if="!previewUrls[a.index]" @click="previewAttachment(a)" class="text-sm text-primary-600 hover:underline">
+                <button v-if="!previewed[a.index]" @click="previewAttachment(a)" class="text-sm text-primary-600 hover:underline">
                   Preview
                 </button>
                 <img v-else-if="a.content_type.startsWith('image/')" :src="previewUrls[a.index]" class="max-h-64 border border-gray-200 rounded" />
@@ -191,6 +191,7 @@ export default {
     const rejectReason = ref('')
     const confirmDuplicateRisk = ref(false)
     const actionError = ref(null)
+    const previewed = ref({})
     const previewUrls = ref({})
     const previewText = ref({})
     const objectUrls = ref([])
@@ -200,6 +201,7 @@ export default {
     const revokeAllObjectUrls = () => {
       objectUrls.value.forEach((url) => URL.revokeObjectURL(url))
       objectUrls.value = []
+      previewed.value = {}
       previewUrls.value = {}
       previewText.value = {}
     }
@@ -230,6 +232,14 @@ export default {
         } else {
           previewUrls.value = { ...previewUrls.value, [attachment.index]: url }
         }
+        // Marks the preview as loaded regardless of which of the two maps
+        // above was populated -- the template picks image/pdf/text
+        // rendering by content type, but "has a preview been requested"
+        // is a single, type-independent flag. Without this, a plain-text
+        // attachment writes only into previewText, previewUrls[index]
+        // stays falsy, and the template's Preview-button guard never
+        // clears.
+        previewed.value = { ...previewed.value, [attachment.index]: true }
       } catch (err) {
         actionError.value = 'Failed to load attachment preview'
       }
@@ -259,7 +269,13 @@ export default {
         if (result.state === 'sent') {
           emit('decided')
         } else {
-          message.value = { ...message.value, ...result }
+          // Re-fetch rather than merging `result` into message.value:
+          // the send response's recipients are shaped for the delivery
+          // outcome (address/delivered/upstream_response) and have no
+          // `hidden` field, so a shallow merge would silently drop the
+          // blind-carbon flag the reviewer already saw (FR-015a). The
+          // detail endpoint is the source of truth for display shape.
+          await fetchMessage()
         }
       } catch (err) {
         actionError.value = err.response?.data?.error || 'Failed to send the message'
@@ -290,7 +306,10 @@ export default {
           emit('decided')
         } else {
           confirmDuplicateRisk.value = false
-          message.value = { ...message.value, ...result }
+          // See handleSendNow: re-fetch instead of merging, so fields the
+          // send response doesn't carry (like recipients[].hidden) are
+          // never dropped.
+          await fetchMessage()
         }
       } catch (err) {
         actionError.value = err.response?.data?.error || 'Failed to retry the message'
@@ -358,6 +377,7 @@ export default {
       rejectReason,
       confirmDuplicateRisk,
       actionError,
+      previewed,
       previewUrls,
       previewText,
       showHistory,

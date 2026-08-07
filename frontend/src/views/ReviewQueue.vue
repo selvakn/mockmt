@@ -32,31 +32,56 @@
           <p>No messages in this state</p>
         </div>
 
-        <div v-else class="divide-y divide-gray-200 overflow-y-auto">
-          <div
-            v-for="msg in messages"
-            :key="msg.id"
-            @click="selectedMessageId = msg.id"
-            :class="[
-              'p-4 hover:bg-gray-50 cursor-pointer transition-colors duration-150',
-              selectedMessageId === msg.id ? 'bg-primary-50 border-r-2 border-primary-600' : ''
-            ]"
-          >
-            <div class="flex items-start justify-between">
-              <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium text-gray-900 truncate">{{ msg.envelope_from }}</p>
-                <p class="text-sm text-gray-900 font-semibold truncate">{{ msg.subject }}</p>
-                <p class="text-xs text-gray-500 truncate">
-                  To: {{ recipientSummary(msg.recipients) }}
-                  <span v-if="hasHiddenRecipient(msg.recipients)" class="text-amber-600 font-medium">(+ hidden)</span>
-                </p>
+        <div v-else class="flex-1 flex flex-col overflow-hidden">
+          <div class="divide-y divide-gray-200 overflow-y-auto flex-1">
+            <div
+              v-for="msg in messages"
+              :key="msg.id"
+              @click="selectedMessageId = msg.id"
+              :class="[
+                'p-4 hover:bg-gray-50 cursor-pointer transition-colors duration-150',
+                selectedMessageId === msg.id ? 'bg-primary-50 border-r-2 border-primary-600' : ''
+              ]"
+            >
+              <div class="flex items-start justify-between">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-gray-900 truncate">{{ msg.envelope_from }}</p>
+                  <p class="text-sm text-gray-900 font-semibold truncate">{{ msg.subject }}</p>
+                  <p class="text-xs text-gray-500 truncate">
+                    To: {{ recipientSummary(msg.recipients) }}
+                    <span v-if="hasHiddenRecipient(msg.recipients)" class="text-amber-600 font-medium">(+ hidden)</span>
+                  </p>
+                </div>
+                <div class="flex flex-col items-end space-y-1 ml-2">
+                  <span class="text-xs text-gray-400">{{ formatDate(msg.received_at) }}</span>
+                  <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', stateBadgeClass(msg.state)]">
+                    {{ msg.state }}
+                  </span>
+                </div>
               </div>
-              <div class="flex flex-col items-end space-y-1 ml-2">
-                <span class="text-xs text-gray-400">{{ formatDate(msg.received_at) }}</span>
-                <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', stateBadgeClass(msg.state)]">
-                  {{ msg.state }}
-                </span>
-              </div>
+            </div>
+          </div>
+
+          <!-- Pagination: without this, only the first PAGE_SIZE messages
+               are ever reachable -- at SC-008's 500-message queue, that
+               leaves 450 permanently invisible. -->
+          <div v-if="total > pageSize" class="p-3 border-t border-gray-200 flex items-center justify-between text-sm text-gray-600">
+            <span>{{ rangeStart }}&ndash;{{ rangeEnd }} of {{ total }}</span>
+            <div class="space-x-2">
+              <button
+                @click="goToPreviousPage"
+                :disabled="offset === 0"
+                class="px-3 py-1 border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+              >
+                Previous
+              </button>
+              <button
+                @click="goToNextPage"
+                :disabled="rangeEnd >= total"
+                class="px-3 py-1 border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+              >
+                Next
+              </button>
             </div>
           </div>
         </div>
@@ -75,10 +100,12 @@
 </template>
 
 <script>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import Header from '../components/Header.vue'
 import ReviewMessage from '../components/ReviewMessage.vue'
 import { getRelayQueue } from '../services/api'
+
+const PAGE_SIZE = 50
 
 export default {
   name: 'ReviewQueue',
@@ -89,18 +116,37 @@ export default {
     const error = ref(null)
     const stateFilter = ref('pending_review')
     const selectedMessageId = ref(null)
+    const offset = ref(0)
+    const total = ref(0)
+
+    const pageSize = PAGE_SIZE
+    const rangeStart = computed(() => (total.value === 0 ? 0 : offset.value + 1))
+    const rangeEnd = computed(() => Math.min(offset.value + messages.value.length, total.value))
 
     const fetchQueue = async () => {
       try {
         loading.value = true
-        const data = await getRelayQueue({ state: stateFilter.value })
+        const data = await getRelayQueue({ state: stateFilter.value, limit: PAGE_SIZE, offset: offset.value })
         messages.value = data.messages
+        total.value = data.total
         error.value = null
       } catch (err) {
         error.value = 'Failed to load the review queue'
       } finally {
         loading.value = false
       }
+    }
+
+    const goToNextPage = () => {
+      if (rangeEnd.value >= total.value) return
+      offset.value += PAGE_SIZE
+      fetchQueue()
+    }
+
+    const goToPreviousPage = () => {
+      if (offset.value === 0) return
+      offset.value = Math.max(0, offset.value - PAGE_SIZE)
+      fetchQueue()
     }
 
     const handleDecided = () => {
@@ -121,7 +167,13 @@ export default {
 
     const formatDate = (dateString) => new Date(dateString).toLocaleString()
 
-    watch(stateFilter, fetchQueue)
+    watch(stateFilter, () => {
+      // Switching filters starts back at the first page -- the old
+      // offset almost certainly doesn't line up with the new filter's
+      // result set.
+      offset.value = 0
+      fetchQueue()
+    })
     onMounted(fetchQueue)
 
     return {
@@ -130,11 +182,18 @@ export default {
       error,
       stateFilter,
       selectedMessageId,
+      offset,
+      total,
+      pageSize,
+      rangeStart,
+      rangeEnd,
       recipientSummary,
       hasHiddenRecipient,
       stateBadgeClass,
       formatDate,
-      handleDecided
+      handleDecided,
+      goToNextPage,
+      goToPreviousPage
     }
   }
 }
