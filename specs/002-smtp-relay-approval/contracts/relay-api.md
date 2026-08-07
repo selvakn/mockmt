@@ -181,6 +181,7 @@ Behaviour:
 4. From `failed` with `failure_kind='indeterminate'`, `confirm_duplicate_risk: true` is **required**; without it, `422` with an error explaining a duplicate may be delivered (FR-025a).
 5. Recipients already `delivered` are skipped (FR-025).
 6. The attempt is bounded by `RELAY_TIMEOUT_SECONDS` (FR-020b).
+7. `state: "sent"` means *every* attempted recipient was delivered. If the upstream accepts some recipients and rejects others, the response is `state: "failed"`, `failure_kind: "confirmed"` — not `"sent"` — precisely so the message stays retriable (FR-025) and the rejected recipient is not permanently unreachable. The `recipients` array in that response still reports the ones that *were* delivered as `delivered: true`, and a retry skips them per point 5.
 
 Response `200` — delivered:
 

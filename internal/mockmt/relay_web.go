@@ -129,7 +129,7 @@ func handleRelayQueue(c *gin.Context) {
 			"state":           m.State,
 			"received_at":     m.ReceivedAt,
 			"size_bytes":      m.SizeBytes,
-			"has_attachments": m.PurgedAt == nil && messageHasAttachments(m.RawMessage),
+			"has_attachments": m.HasAttachments,
 		}
 	}
 
@@ -323,12 +323,19 @@ func handleRelaySend(c *gin.Context) {
 
 	msg, err := getQueuedMessage(id)
 	if err != nil {
+		// The claim already committed: the message is sitting in
+		// "sending". Leaving it there on an early return would strand it
+		// exactly as FR-028 forbids, reachable only by a restart. Nothing
+		// was transmitted to the upstream at this point, so the failure
+		// is unambiguously confirmed.
+		_ = markFailed(id, "confirmed", "failed to load message after claiming it for send", reviewer, nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load message"})
 		return
 	}
 
 	attemptID, err := startDeliveryAttempt(id, reviewer)
 	if err != nil {
+		_ = markFailed(id, "confirmed", "failed to record the delivery attempt before sending", reviewer, nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record delivery attempt"})
 		return
 	}
@@ -346,13 +353,7 @@ func handleRelaySend(c *gin.Context) {
 	_ = finishDeliveryAttempt(attemptID, result.Outcome, result.UpstreamResponse, result.FailureReason)
 
 	if result.Outcome == outcomeSent {
-		var delivered []string
-		for _, r := range result.Recipients {
-			if r.Delivered {
-				delivered = append(delivered, r.Address)
-			}
-		}
-		if err := markSent(id, reviewer, result.UpstreamResponse, delivered); err != nil {
+		if err := markSent(id, reviewer, result.UpstreamResponse, result.Recipients); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record delivery"})
 			return
 		}

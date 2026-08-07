@@ -8,7 +8,7 @@ import (
 func insertTerminalMessageAt(t *testing.T, state string, decidedAtOffsetDays int) int64 {
 	t.Helper()
 
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), false, []queuedRecipientInput{
 		{Address: "customer@example.com"},
 	})
 	if err != nil {

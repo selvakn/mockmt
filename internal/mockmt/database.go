@@ -121,6 +121,7 @@ func createRelayTables() error {
 			subject TEXT NOT NULL,
 			raw_message BLOB,
 			size_bytes INTEGER NOT NULL,
+			has_attachments BOOLEAN NOT NULL DEFAULT FALSE,
 			state TEXT NOT NULL CHECK (state IN ('pending_review','sending','sent','failed','rejected')),
 			failure_kind TEXT CHECK (failure_kind IS NULL OR failure_kind IN ('confirmed','indeterminate')),
 			failure_reason TEXT,

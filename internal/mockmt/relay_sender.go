@@ -162,6 +162,25 @@ func relaySend(cfg *RelayConfig, envelopeFrom string, recipients []QueuedRecipie
 
 	_ = c.Quit()
 
+	if len(accepted) < len(toSend) {
+		// Some recipients were rejected at RCPT while others were
+		// accepted and delivered. This is not a clean success (not
+		// everyone got the message) and not indeterminate either (we
+		// know exactly what happened to each recipient, with no
+		// ambiguity about the ones that failed) -- it is a confirmed
+		// partial failure. Reporting it as confirmed_failed, rather
+		// than sent, keeps the message retriable (FR-025) so the
+		// still-unserved recipients can be tried again; the delivered
+		// ones are recorded as delivered so a retry does not re-send to
+		// them (spec.md US4 scenario 3).
+		return sendResult{
+			Outcome:          outcomeConfirmed,
+			UpstreamResponse: resp.StatusText,
+			FailureReason:    fmt.Sprintf("upstream rejected %d of %d recipient(s); see per-recipient detail", len(toSend)-len(accepted), len(toSend)),
+			Recipients:       outcomes,
+		}
+	}
+
 	return sendResult{Outcome: outcomeSent, UpstreamResponse: resp.StatusText, Recipients: outcomes}
 }
 

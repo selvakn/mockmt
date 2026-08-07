@@ -177,7 +177,7 @@ func (s *Session) queueForReview(raw []byte) error {
 		recipients[i] = queuedRecipientInput{Address: to, Hidden: hidden[to]}
 	}
 
-	id, err := insertQueuedMessage(s.from, headerFrom, meta.Subject, raw, recipients)
+	id, err := insertQueuedMessage(s.from, headerFrom, meta.Subject, raw, len(meta.Attachments) > 0, recipients)
 	if err != nil {
 		log.Printf("Error queueing message for review: %v", err)
 		return err

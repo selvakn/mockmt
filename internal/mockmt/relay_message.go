@@ -133,26 +133,6 @@ func extractPart(raw []byte, index int) (extractedPart, error) {
 	}
 }
 
-// messageHasAttachments reports whether raw contains at least one
-// attachment part, without reading any part body -- cheap enough to call
-// once per row when listing the queue, unlike parseMessageMetadata which
-// reads every part fully to compute sizes.
-func messageHasAttachments(raw []byte) bool {
-	mr, err := mail.CreateReader(bytes.NewReader(raw))
-	if err != nil {
-		return false
-	}
-	for {
-		p, err := mr.NextPart()
-		if err != nil {
-			return false
-		}
-		if _, ok := p.Header.(*mail.AttachmentHeader); ok {
-			return true
-		}
-	}
-}
-
 // previewableContentTypes are renderable inline in the portal without a
 // download (FR-016a): images, PDF, and plain text. Everything else is
 // download-only (FR-016b).

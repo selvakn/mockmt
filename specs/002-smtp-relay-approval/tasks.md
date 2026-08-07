@@ -305,3 +305,11 @@ US3 (reject) is only four tasks and completes the reviewer's vocabulary, so it i
 - Every task names an exact file path; tasks sharing a file are not marked [P]
 - Commit after each task or logical group
 - Stop at any checkpoint to validate a story independently
+
+## Post-implementation fixes (code review, 2026-08-06)
+
+Three bugs found by review after the initial implementation, all fixed with regression tests:
+
+1. **Partial recipient failure recorded as full success.** `relaySend` returned `outcomeSent` whenever the final dot was acknowledged, even if some recipients had been rejected at `RCPT`. This made the message terminal (`sent`) with no way to retry the unserved recipients, and dropped their rejection reason after returning it once in the HTTP response. Fixed: a mixed accept/reject outcome is now `confirmed_failed` (message stays retriable), and `markSent`/`markFailed` persist every recipient's own `upstream_response`, not just the delivered ones'. See `TestPartialSendFailureStaysRetriableAndRetrySucceeds`.
+2. **`has_attachments` always false in the queue list.** `listQueue`'s `SELECT` never fetched `raw_message`, so the field was computed against a `nil` byte slice every time. Fixed: added a persisted `has_attachments` column, computed once at ingest from the already-parsed message metadata (no extra parsing cost), instead of derived at list time from content that isn't loaded. See `TestQueueListingReportsHasAttachmentsAccurately`.
+3. **Recoverable DB errors after claiming stranded the message in `sending`.** If `getQueuedMessage` or `startDeliveryAttempt` failed after `tryClaimMessageForSend` had already committed the claim, the handler returned `500` with nothing to release it — stuck until the next process restart's sweep. Fixed: both paths now call `markFailed` before returning. See `TestClaimedMessageSettledByPreflightErrorRemainsRecoverable`.

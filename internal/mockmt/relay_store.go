@@ -19,6 +19,7 @@ type QueuedMessage struct {
 	Subject          string
 	RawMessage       []byte // nil once purged (FR-036)
 	SizeBytes        int64
+	HasAttachments   bool
 	State            string
 	FailureKind      string
 	FailureReason    string
@@ -106,15 +107,15 @@ func appendAuditEvent(tx *sql.Tx, messageID int64, fromState, toState, actor, de
 // (FR-009): a submission that fails partway leaves nothing behind, and
 // once this returns successfully the submission is never lost. One
 // message row regardless of recipient count (FR-021a).
-func insertQueuedMessage(envelopeFrom, headerFrom, subject string, raw []byte, recipients []queuedRecipientInput) (int64, error) {
+func insertQueuedMessage(envelopeFrom, headerFrom, subject string, raw []byte, hasAttachments bool, recipients []queuedRecipientInput) (int64, error) {
 	messageID := generateMessageID()
 
 	var id int64
 	err := relayTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`
-			INSERT INTO queued_messages (message_id, envelope_from, header_from, subject, raw_message, size_bytes, state)
-			VALUES (?, ?, ?, ?, ?, ?, 'pending_review')
-		`, messageID, envelopeFrom, nullableString(headerFrom), subject, raw, len(raw))
+			INSERT INTO queued_messages (message_id, envelope_from, header_from, subject, raw_message, size_bytes, has_attachments, state)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review')
+		`, messageID, envelopeFrom, nullableString(headerFrom), subject, raw, len(raw), hasAttachments)
 		if err != nil {
 			return err
 		}
@@ -177,10 +178,10 @@ func getQueuedMessage(id int64) (*QueuedMessage, error) {
 	var decidedAt, purgedAt sql.NullTime
 
 	err := db.QueryRow(`
-		SELECT id, message_id, envelope_from, header_from, subject, raw_message, size_bytes, state,
+		SELECT id, message_id, envelope_from, header_from, subject, raw_message, size_bytes, has_attachments, state,
 		       failure_kind, failure_reason, upstream_response, received_at, decided_at, decided_by, purged_at
 		FROM queued_messages WHERE id = ?
-	`, id).Scan(&m.ID, &m.MessageID, &m.EnvelopeFrom, &headerFrom, &m.Subject, &m.RawMessage, &m.SizeBytes, &m.State,
+	`, id).Scan(&m.ID, &m.MessageID, &m.EnvelopeFrom, &headerFrom, &m.Subject, &m.RawMessage, &m.SizeBytes, &m.HasAttachments, &m.State,
 		&failureKind, &failureReason, &upstreamResponse, &m.ReceivedAt, &decidedAt, &decidedBy, &purgedAt)
 	if err != nil {
 		return nil, err
@@ -226,7 +227,7 @@ func listQueue(state string, limit, offset int) (total int, messages []QueuedMes
 
 	queryArgs := append(append([]interface{}{}, countArgs...), limit, offset)
 	rows, err := db.Query(`
-		SELECT id, message_id, envelope_from, header_from, subject, size_bytes, state,
+		SELECT id, message_id, envelope_from, header_from, subject, size_bytes, has_attachments, state,
 		       failure_kind, failure_reason, received_at, decided_at, decided_by, purged_at
 		FROM queued_messages `+where+`
 		ORDER BY received_at DESC
@@ -240,7 +241,7 @@ func listQueue(state string, limit, offset int) (total int, messages []QueuedMes
 		var m QueuedMessage
 		var headerFrom, failureKind, failureReason, decidedBy sql.NullString
 		var decidedAt, purgedAt sql.NullTime
-		if err := rows.Scan(&m.ID, &m.MessageID, &m.EnvelopeFrom, &headerFrom, &m.Subject, &m.SizeBytes, &m.State,
+		if err := rows.Scan(&m.ID, &m.MessageID, &m.EnvelopeFrom, &headerFrom, &m.Subject, &m.SizeBytes, &m.HasAttachments, &m.State,
 			&failureKind, &failureReason, &m.ReceivedAt, &decidedAt, &decidedBy, &purgedAt); err != nil {
 			_ = rows.Close()
 			return 0, nil, err
@@ -494,12 +495,36 @@ func tryClaimMessageForSend(id int64, actor string, confirmDuplicateRisk bool) (
 	return claimed, needsConfirmation, previousState, err
 }
 
+// applyRecipientOutcome persists one recipient's result of a delivery
+// attempt: its upstream response is always recorded -- a rejection
+// reason is exactly as worth keeping as an acceptance -- and delivered/
+// delivered_at are only set when it actually succeeded.
+func applyRecipientOutcome(tx *sql.Tx, messageID int64, r recipientOutcome) error {
+	if r.Delivered {
+		_, err := tx.Exec(`
+			UPDATE queued_recipients
+			SET delivered = TRUE, delivered_at = CURRENT_TIMESTAMP, upstream_response = ?
+			WHERE message_id = ? AND address = ?
+		`, nullableString(r.UpstreamResponse), messageID, r.Address)
+		return err
+	}
+	_, err := tx.Exec(`
+		UPDATE queued_recipients
+		SET upstream_response = ?
+		WHERE message_id = ? AND address = ?
+	`, nullableString(r.UpstreamResponse), messageID, r.Address)
+	return err
+}
+
 // markSent settles a claimed message as delivered (FR-023): records the
 // delivery timestamp, the approving reviewer, and the upstream acceptance
-// response, and marks each successfully served recipient. Done in one
+// response, and marks each successfully served recipient -- with its own
+// upstream response, not just the shared message-level one. Done in one
 // transaction so the message and its per-recipient results can never
-// disagree.
-func markSent(id int64, reviewer, upstreamResponse string, deliveredAddresses []string) error {
+// disagree. Every recipient passed in must be Delivered: a mixed result
+// (some recipients accepted, some rejected) is not "sent" and must go
+// through markFailed instead, so the message stays retriable (FR-025).
+func markSent(id int64, reviewer, upstreamResponse string, recipients []recipientOutcome) error {
 	return relayTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`
 			UPDATE queued_messages
@@ -515,12 +540,8 @@ func markSent(id int64, reviewer, upstreamResponse string, deliveredAddresses []
 			return fmt.Errorf("markSent: message %d was not in sending state", id)
 		}
 
-		for _, addr := range deliveredAddresses {
-			if _, err := tx.Exec(`
-				UPDATE queued_recipients
-				SET delivered = TRUE, delivered_at = CURRENT_TIMESTAMP
-				WHERE message_id = ? AND address = ?
-			`, id, addr); err != nil {
+		for _, r := range recipients {
+			if err := applyRecipientOutcome(tx, id, r); err != nil {
 				return err
 			}
 		}
@@ -530,8 +551,9 @@ func markSent(id int64, reviewer, upstreamResponse string, deliveredAddresses []
 }
 
 // markFailed settles a claimed message as failed (FR-024): records the
-// failure kind and reason, retains the full message content, marks
-// whichever recipients were actually served before the failure, and
+// failure kind and reason, retains the full message content, records
+// every recipient's outcome -- including the rejection reason for
+// recipients that were not served, not only the ones that were -- and
 // remains eligible for retry. actor is the reviewer whose Send Now
 // triggered the attempt that failed -- the failure itself wasn't their
 // choice, but the attempt was, and FR-030 wants the actor who caused the
@@ -553,14 +575,7 @@ func markFailed(id int64, kind, reason, actor string, recipientResults []recipie
 		}
 
 		for _, r := range recipientResults {
-			if !r.Delivered {
-				continue
-			}
-			if _, err := tx.Exec(`
-				UPDATE queued_recipients
-				SET delivered = TRUE, delivered_at = CURRENT_TIMESTAMP, upstream_response = ?
-				WHERE message_id = ? AND address = ?
-			`, r.UpstreamResponse, id, r.Address); err != nil {
+			if err := applyRecipientOutcome(tx, id, r); err != nil {
 				return err
 			}
 		}

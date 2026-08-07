@@ -89,8 +89,14 @@ func TestRelaySendPartialRecipientFailure(t *testing.T) {
 	recipients := []QueuedRecipient{{Address: "good@example.com"}, {Address: "bad@example.com"}}
 	result := relaySend(cfg, cfg.Identity, recipients, rewritten)
 
-	if result.Outcome != outcomeSent {
-		t.Fatalf("Outcome = %q, want sent (reason: %s)", result.Outcome, result.FailureReason)
+	// Not everyone got the message, so the message-level outcome must not
+	// be "sent" -- that would make it terminal and permanently
+	// unretriable for bad@example.com. It is also not indeterminate:
+	// exactly what happened to each recipient is known, with no
+	// ambiguity. Confirmed-failed is what keeps the message retriable
+	// (FR-025) while still recording good@example.com as served.
+	if result.Outcome != outcomeConfirmed {
+		t.Fatalf("Outcome = %q, want confirmed_failed (a partial failure must not be reported as sent, or the unserved recipient could never be retried)", result.Outcome)
 	}
 
 	byAddr := map[string]recipientOutcome{}

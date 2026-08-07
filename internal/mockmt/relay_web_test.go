@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/emersion/go-smtp"
 	"github.com/gin-gonic/gin"
 )
 
@@ -192,7 +193,7 @@ func TestRelayAPIQueueDetailAndSend(t *testing.T) {
 		Subject:  "Your quote",
 		TextBody: "Hello, here is your quote.",
 	})
-	id, err := insertQueuedMessage("agent@myapp.local", "agent@myapp.local", "Your quote", raw, []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "agent@myapp.local", "Your quote", raw, false, []queuedRecipientInput{
 		{Address: "customer@example.com", Hidden: false},
 	})
 	if err != nil {
@@ -271,7 +272,7 @@ func TestNonReviewerForbiddenFromEveryEndpointIncludingOwnRecipientAddress(t *te
 	})
 
 	raw := buildTestMessage(t, testMessageOptions{From: "agent@myapp.local", To: []string{"bob@example.com"}, Subject: "s", TextBody: "b"})
-	id, err := insertQueuedMessage("agent@myapp.local", "agent@myapp.local", "s", raw, []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "agent@myapp.local", "s", raw, false, []queuedRecipientInput{
 		{Address: "bob@example.com", Hidden: false},
 	})
 	if err != nil {
@@ -314,7 +315,7 @@ func TestRejectMovesToRejectedAndBlocksFurtherAction(t *testing.T) {
 	})
 
 	raw := buildTestMessage(t, testMessageOptions{From: "agent@myapp.local", To: []string{"customer@example.com"}, Subject: "s", TextBody: "b"})
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, []queuedRecipientInput{{Address: "customer@example.com"}})
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, false, []queuedRecipientInput{{Address: "customer@example.com"}})
 	if err != nil {
 		t.Fatalf("insertQueuedMessage failed: %v", err)
 	}
@@ -377,7 +378,7 @@ func TestRetryIndeterminateRequiresConfirmation(t *testing.T) {
 	setRelayConfigForTest(t, cfg)
 
 	raw := buildTestMessage(t, testMessageOptions{From: "agent@myapp.local", To: []string{"customer@example.com"}, Subject: "s", TextBody: "b"})
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, []queuedRecipientInput{{Address: "customer@example.com"}})
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, false, []queuedRecipientInput{{Address: "customer@example.com"}})
 	if err != nil {
 		t.Fatalf("insertQueuedMessage failed: %v", err)
 	}
@@ -495,7 +496,7 @@ func TestDetailAndAttachmentResponsesCarryIsolationHeaders(t *testing.T) {
 		HTMLBody: `<html><body><script>window.parent.postMessage(document.cookie, "*")</script><h1>hostile</h1></body></html>`,
 		Attach:   &testAttachment{Filename: "evil.html", ContentType: "text/html", Body: []byte("<script>alert(1)</script>")},
 	})
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, []queuedRecipientInput{{Address: "customer@example.com"}})
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, true, []queuedRecipientInput{{Address: "customer@example.com"}})
 	if err != nil {
 		t.Fatalf("insertQueuedMessage failed: %v", err)
 	}
@@ -563,6 +564,226 @@ func TestReviewingMessageTriggersNoRemoteFetch(t *testing.T) {
 	// than, say, having been pre-fetched and inlined.
 	if !strings.Contains(meta.HTMLBody, "example-tracker.invalid") {
 		t.Fatal("expected the remote reference to pass through unresolved for client-side sandboxing")
+	}
+}
+
+// Regression test: partial recipient failure must not be recorded as a
+// full success. If ANY recipient is rejected, the message must land in
+// "failed" (not "sent", which is terminal and would make the rejected
+// recipient permanently unretriable), the delivered recipient's own
+// upstream response must be persisted, the rejected recipient's
+// rejection reason must be persisted too (not just returned once in the
+// HTTP body and dropped), and a subsequent retry must succeed while
+// re-attempting only the recipient that was not yet served.
+func TestPartialSendFailureStaysRetriableAndRetrySucceeds(t *testing.T) {
+	setupTestDB(t)
+	newTestJWTSecret(t)
+
+	rejectingUpstream := startFakeUpstream(t, fakeUpstreamOptions{RejectRecipient: "bad@example.com"})
+	cfg := relayConfigForUpstream(t, rejectingUpstream)
+	cfg.Enabled = true
+	cfg.reviewers = map[string]struct{}{"alice@example.com": {}}
+	setRelayConfigForTest(t, cfg)
+
+	raw := buildTestMessage(t, testMessageOptions{
+		From: "agent@myapp.local", To: []string{"good@example.com", "bad@example.com"}, Subject: "s", TextBody: "b",
+	})
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", raw, false, []queuedRecipientInput{
+		{Address: "good@example.com"},
+		{Address: "bad@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("insertQueuedMessage failed: %v", err)
+	}
+
+	r := newTestRelayRouter()
+	token := authTokenFor(t, "alice@example.com")
+	sendPath := fmt.Sprintf("/api/relay/messages/%d/send", id)
+
+	w := doRequest(r, http.MethodPost, sendPath, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first send = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var firstResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &firstResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if firstResp["state"] != "failed" {
+		t.Fatalf("state after partial failure = %v, want failed (must stay retriable)", firstResp["state"])
+	}
+
+	msg, err := getQueuedMessage(id)
+	if err != nil {
+		t.Fatalf("getQueuedMessage failed: %v", err)
+	}
+	if msg.State != "failed" {
+		t.Fatalf("persisted state = %q, want failed", msg.State)
+	}
+	byAddr := map[string]QueuedRecipient{}
+	for _, rec := range msg.Recipients {
+		byAddr[rec.Address] = rec
+	}
+	if !byAddr["good@example.com"].Delivered {
+		t.Error("good@example.com must be marked delivered")
+	}
+	if byAddr["good@example.com"].UpstreamResponse == "" {
+		t.Error("good@example.com must have its own upstream_response persisted")
+	}
+	if byAddr["bad@example.com"].Delivered {
+		t.Error("bad@example.com must not be marked delivered")
+	}
+	if byAddr["bad@example.com"].UpstreamResponse == "" {
+		t.Error("bad@example.com's rejection reason must be persisted, not just returned once in the HTTP response")
+	}
+
+	// Point relay at an upstream that accepts everyone, then retry. Only
+	// the still-unserved recipient should be attempted.
+	healthyUpstream := startFakeUpstream(t, fakeUpstreamOptions{})
+	cfg2 := relayConfigForUpstream(t, healthyUpstream)
+	cfg2.Enabled = true
+	cfg2.reviewers = map[string]struct{}{"alice@example.com": {}}
+	setRelayConfigForTest(t, cfg2)
+
+	w = doRequest(r, http.MethodPost, sendPath, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("retry = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var retryResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &retryResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if retryResp["state"] != "sent" {
+		t.Fatalf("state after retry = %v, want sent, body=%s", retryResp["state"], w.Body.String())
+	}
+	retryRecipients, ok := retryResp["recipients"].([]interface{})
+	if !ok || len(retryRecipients) != 1 {
+		t.Fatalf("retry attempted %d recipients, want exactly 1 (only the previously-unserved one)", len(retryRecipients))
+	}
+
+	finalMsg, err := getQueuedMessage(id)
+	if err != nil {
+		t.Fatalf("getQueuedMessage failed: %v", err)
+	}
+	if finalMsg.State != "sent" {
+		t.Fatalf("final state = %q, want sent", finalMsg.State)
+	}
+	for _, rec := range finalMsg.Recipients {
+		if !rec.Delivered {
+			t.Errorf("recipient %s not delivered after successful retry", rec.Address)
+		}
+	}
+}
+
+// Regression test: has_attachments in the queue listing must reflect
+// reality, computed once at ingest and persisted -- not derived from
+// RawMessage, which listQueue never selects (and is nil for every row as
+// a result).
+func TestQueueListingReportsHasAttachmentsAccurately(t *testing.T) {
+	setupTestDB(t)
+	newTestJWTSecret(t)
+	setRelayConfigForTest(t, &RelayConfig{
+		Enabled:   true,
+		reviewers: map[string]struct{}{"alice@example.com": {}},
+	})
+
+	s := &Session{backend: &Backend{Username: "user", Password: "pass"}}
+	authenticate(t, s, "user", "pass")
+
+	if err := s.Mail("agent@myapp.local", &smtp.MailOptions{}); err != nil {
+		t.Fatalf("Mail failed: %v", err)
+	}
+	if err := s.Rcpt("plain@example.com", &smtp.RcptOptions{}); err != nil {
+		t.Fatalf("Rcpt failed: %v", err)
+	}
+	if err := s.Data(strings.NewReader("Subject: no attachment\r\nFrom: agent@myapp.local\r\nTo: plain@example.com\r\n\r\nHello\r\n")); err != nil {
+		t.Fatalf("Data failed: %v", err)
+	}
+	s.Reset()
+
+	if err := s.Mail("agent@myapp.local", &smtp.MailOptions{}); err != nil {
+		t.Fatalf("Mail failed: %v", err)
+	}
+	if err := s.Rcpt("withattach@example.com", &smtp.RcptOptions{}); err != nil {
+		t.Fatalf("Rcpt failed: %v", err)
+	}
+	withAttachment := buildTestMessage(t, testMessageOptions{
+		From: "agent@myapp.local", To: []string{"withattach@example.com"}, Subject: "has attachment", TextBody: "b",
+		Attach: &testAttachment{Filename: "f.txt", ContentType: "text/plain", Body: []byte("data")},
+	})
+	if err := s.Data(strings.NewReader(string(withAttachment))); err != nil {
+		t.Fatalf("Data failed: %v", err)
+	}
+
+	r := newTestRelayRouter()
+	token := authTokenFor(t, "alice@example.com")
+	w := doRequest(r, http.MethodGet, "/api/relay/queue?state=all&limit=10", token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/relay/queue = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Messages []struct {
+			Subject        string `json:"subject"`
+			HasAttachments bool   `json:"has_attachments"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	bySubject := map[string]bool{}
+	for _, m := range body.Messages {
+		bySubject[m.Subject] = m.HasAttachments
+	}
+	if bySubject["no attachment"] {
+		t.Error(`"no attachment" message reported has_attachments = true, want false`)
+	}
+	if !bySubject["has attachment"] {
+		t.Error(`"has attachment" message reported has_attachments = false, want true`)
+	}
+}
+
+// Regression test for the rescue mechanism a stranded-claim fix depends
+// on: if a downstream error occurs after a message has been claimed
+// (moved to "sending") but before any network attempt is made, the
+// handler settles it back via markFailed rather than leaving it stuck.
+// Reproducing the exact getQueuedMessage/startDeliveryAttempt failure
+// through the live HTTP handler would require a fault-injection seam
+// this codebase doesn't have; this test instead verifies the rescue's
+// consequence directly -- that a message settled this way is genuinely
+// recoverable, not just nominally in a different state.
+func TestClaimedMessageSettledByPreflightErrorRemainsRecoverable(t *testing.T) {
+	setupTestDB(t)
+
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), false, []queuedRecipientInput{
+		{Address: "customer@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("insertQueuedMessage failed: %v", err)
+	}
+
+	claimed, _, _, err := tryClaimMessageForSend(id, "alice@example.com", false)
+	if err != nil || !claimed {
+		t.Fatalf("failed to claim: claimed=%v err=%v", claimed, err)
+	}
+
+	// Simulate the handler's rescue path for a pre-send DB error.
+	if err := markFailed(id, "confirmed", "failed to load message after claiming it for send", "alice@example.com", nil); err != nil {
+		t.Fatalf("markFailed failed: %v", err)
+	}
+
+	msg, err := getQueuedMessage(id)
+	if err != nil {
+		t.Fatalf("getQueuedMessage failed: %v", err)
+	}
+	if msg.State != "failed" {
+		t.Fatalf("state = %q, want failed (must not be stuck in sending)", msg.State)
+	}
+
+	// Recoverable: claimable again (retry), and abandonable (reject).
+	claimed, _, _, err = tryClaimMessageForSend(id, "alice@example.com", false)
+	if err != nil || !claimed {
+		t.Fatalf("message is not retriable after the rescue: claimed=%v err=%v", claimed, err)
 	}
 }
 

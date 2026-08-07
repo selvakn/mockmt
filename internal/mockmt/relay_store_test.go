@@ -30,7 +30,7 @@ func countQueuedRecipients(t *testing.T, messageID int64) int {
 func TestInsertQueuedMessageWritesMessageRecipientsAndAudit(t *testing.T) {
 	setupTestDB(t)
 
-	id, err := insertQueuedMessage("agent@myapp.local", "Agent <agent@myapp.local>", "Hello", []byte("raw bytes"), []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "Agent <agent@myapp.local>", "Hello", []byte("raw bytes"), false, []queuedRecipientInput{
 		{Address: "customer@example.com", Hidden: false},
 		{Address: "audit@example.com", Hidden: true},
 	})
@@ -91,7 +91,7 @@ func TestRelayTxRollsBackEverythingOnError(t *testing.T) {
 func TestTryClaimMessageIsExactlyOnceUnderConcurrency(t *testing.T) {
 	setupTestDB(t)
 
-	id, err := insertQueuedMessage("agent@myapp.local", "", "Hello", []byte("raw"), []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "", "Hello", []byte("raw"), false, []queuedRecipientInput{
 		{Address: "customer@example.com", Hidden: false},
 	})
 	if err != nil {
@@ -149,7 +149,7 @@ func TestTryClaimMessageIsExactlyOnceUnderConcurrency(t *testing.T) {
 func TestSweepOrphanedSendingMessagesSettlesAsIndeterminate(t *testing.T) {
 	setupTestDB(t)
 
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), false, []queuedRecipientInput{
 		{Address: "customer@example.com"},
 	})
 	if err != nil {
@@ -163,7 +163,7 @@ func TestSweepOrphanedSendingMessagesSettlesAsIndeterminate(t *testing.T) {
 
 	// Simulate a second, unrelated message that is not stuck, to confirm
 	// the sweep only touches orphaned ones.
-	otherID, err := insertQueuedMessage("agent@myapp.local", "", "s2", []byte("raw2"), []queuedRecipientInput{
+	otherID, err := insertQueuedMessage("agent@myapp.local", "", "s2", []byte("raw2"), false, []queuedRecipientInput{
 		{Address: "someone@example.com"},
 	})
 	if err != nil {
@@ -223,7 +223,7 @@ func TestSweepOrphanedSendingMessagesSettlesAsIndeterminate(t *testing.T) {
 func TestAuditTrailRecordsTransitionsAndSurvivesPurge(t *testing.T) {
 	setupTestDB(t)
 
-	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), []queuedRecipientInput{
+	id, err := insertQueuedMessage("agent@myapp.local", "", "s", []byte("raw"), false, []queuedRecipientInput{
 		{Address: "customer@example.com"},
 	})
 	if err != nil {
@@ -237,7 +237,9 @@ func TestAuditTrailRecordsTransitionsAndSurvivesPurge(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("failed to claim: claimed=%v err=%v", claimed, err)
 	}
-	if err := markSent(id, "alice@example.com", "250 OK", []string{"customer@example.com"}); err != nil {
+	if err := markSent(id, "alice@example.com", "250 OK", []recipientOutcome{
+		{Address: "customer@example.com", Delivered: true, UpstreamResponse: "250 OK"},
+	}); err != nil {
 		t.Fatalf("markSent failed: %v", err)
 	}
 
@@ -292,7 +294,7 @@ func TestQueueingNeverCreatesUserAccounts(t *testing.T) {
 
 	before := countUsers(t)
 
-	_, err := insertQueuedMessage("agent@myapp.local", "", "Hello", []byte("raw"), []queuedRecipientInput{
+	_, err := insertQueuedMessage("agent@myapp.local", "", "Hello", []byte("raw"), false, []queuedRecipientInput{
 		{Address: "customer@example.com", Hidden: false},
 		{Address: "audit@example.com", Hidden: true},
 	})
