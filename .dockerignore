@@ -18,3 +18,7 @@ frontend/dist
 .idea
 *.swp
 *.swo
+
+# Local e2e test rig -- its own separate Go module, never referenced by
+# either the app's Dockerfile or the production docker-compose.yml
+e2e

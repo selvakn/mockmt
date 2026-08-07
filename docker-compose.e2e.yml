@@ -1,0 +1,96 @@
+services:
+  mock-oauth:
+    build:
+      context: ./e2e
+      dockerfile: mockoauth/Dockerfile
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9000/authorize"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  fake-upstream:
+    build:
+      context: ./e2e
+      dockerfile: fakeupstream/Dockerfile
+    volumes:
+      - ./e2e/certs/fake-upstream-cert.pem:/certs/fake-upstream-cert.pem:ro
+      - ./e2e/certs/fake-upstream-key.pem:/certs/fake-upstream-key.pem:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "587"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "1025:1025"
+    environment:
+      GIN_MODE: release
+      OAUTH_AUTH_URL: http://localhost:9000/authorize
+      OAUTH_TOKEN_URL: http://mock-oauth:9000/token
+      OAUTH_USERINFO_URL: http://mock-oauth:9000/userinfo
+      OAUTH_REDIRECT_URI: http://localhost:8080/auth/callback
+      FRONTEND_URL: http://localhost:8080
+      JWT_SECRET_KEY: e2e-test-rig-jwt-secret
+      SMTP_USERNAME: agent
+      SMTP_PASSWORD: agent-pass
+    depends_on:
+      mock-oauth:
+        condition: service_healthy
+
+  app-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+      - "1026:1025"
+    environment:
+      GIN_MODE: release
+      OAUTH_AUTH_URL: http://localhost:9000/authorize
+      OAUTH_TOKEN_URL: http://mock-oauth:9000/token
+      OAUTH_USERINFO_URL: http://mock-oauth:9000/userinfo
+      OAUTH_REDIRECT_URI: http://localhost:8081/auth/callback
+      FRONTEND_URL: http://localhost:8081
+      JWT_SECRET_KEY: e2e-test-rig-jwt-secret
+      SMTP_USERNAME: agent
+      SMTP_PASSWORD: agent-pass
+      RELAY_ENABLED: "true"
+      RELAY_HOST: fake-upstream
+      RELAY_PORT: "587"
+      RELAY_TLS_MODE: starttls
+      RELAY_USERNAME: relay-user
+      RELAY_PASSWORD: relay-pass
+      RELAY_IDENTITY: relay@example.com
+      RELAY_CA_CERT_FILE: /certs/fake-upstream-cert.pem
+      REVIEWER_EMAILS: reviewer@example.com
+    volumes:
+      - ./e2e/certs/fake-upstream-cert.pem:/certs/fake-upstream-cert.pem:ro
+    depends_on:
+      mock-oauth:
+        condition: service_healthy
+      fake-upstream:
+        condition: service_healthy
+
+  smtp-client:
+    image: python:3-alpine
+    volumes:
+      - ./e2e/smtp-client:/scripts:ro
+    environment:
+      SMTP_HOST: app
+      SMTP_PORT: "1025"
+      SMTP_USERNAME: agent
+      SMTP_PASSWORD: agent-pass
+      MAIL_FROM: agent@example.com
+      MAIL_TO: test@example.com
+      MAIL_SUBJECT: Test message from the e2e rig
+      MAIL_BODY: This is a test message sent by the e2e smtp-client.
+    command: ["python", "/scripts/send_mail.py"]
+    profiles: ["tools"]

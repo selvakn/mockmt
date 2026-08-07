@@ -34,7 +34,8 @@ type Email struct {
 func InitDatabase() error {
 	var err error
 	dbPath := getEnv("DATABASE_URL", "./webmail.db")
-	db, err = sql.Open("sqlite3", dbPath)
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	db, err = sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err
 	}
@@ -95,6 +96,120 @@ func createTables() error {
 	}
 
 	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails (received_at)`)
+	if err != nil {
+		return err
+	}
+
+	return createRelayTables()
+}
+
+// createRelayTables creates the relay-mode schema. These tables are
+// entirely separate from users/emails above -- capture-only mode never
+// writes to them and relay mode never writes to users/emails (research
+// R9), which is what makes FR-002 and SC-001 structurally true. Notably,
+// queued_messages has no user_id column and no foreign key to users: there
+// is no column into which a recipient identity could be recorded, so
+// relaying can never provision a portal account for an external address
+// (FR-018a).
+func createRelayTables() error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS queued_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT UNIQUE NOT NULL,
+			envelope_from TEXT NOT NULL,
+			header_from TEXT,
+			subject TEXT NOT NULL,
+			raw_message BLOB,
+			size_bytes INTEGER NOT NULL,
+			has_attachments BOOLEAN NOT NULL DEFAULT FALSE,
+			state TEXT NOT NULL CHECK (state IN ('pending_review','sending','sent','failed','rejected')),
+			failure_kind TEXT CHECK (failure_kind IS NULL OR failure_kind IN ('confirmed','indeterminate')),
+			failure_reason TEXT,
+			upstream_response TEXT,
+			received_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			decided_at DATETIME,
+			decided_by TEXT,
+			purged_at DATETIME
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_queued_messages_state ON queued_messages (state)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_queued_messages_received_at ON queued_messages (received_at)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_queued_messages_state_decided_at ON queued_messages (state, decided_at)`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS queued_recipients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL REFERENCES queued_messages(id),
+			address TEXT NOT NULL,
+			hidden BOOLEAN NOT NULL DEFAULT FALSE,
+			delivered BOOLEAN NOT NULL DEFAULT FALSE,
+			delivered_at DATETIME,
+			upstream_response TEXT
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_queued_recipients_message_id ON queued_recipients (message_id)`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS delivery_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL REFERENCES queued_messages(id),
+			started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			finished_at DATETIME,
+			outcome TEXT CHECK (outcome IS NULL OR outcome IN ('sent','confirmed_failed','indeterminate')),
+			upstream_response TEXT,
+			error TEXT,
+			initiated_by TEXT NOT NULL
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_delivery_attempts_message_id ON delivery_attempts (message_id)`)
+	if err != nil {
+		return err
+	}
+
+	// message_id is deliberately a plain integer, not a foreign key with
+	// ON DELETE CASCADE: no future deletion of a message should be able to
+	// cascade away its audit trail (FR-031).
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS audit_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL,
+			from_state TEXT,
+			to_state TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			detail TEXT
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_events_message_id ON audit_events (message_id)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_events_occurred_at ON audit_events (occurred_at)`)
 	if err != nil {
 		return err
 	}

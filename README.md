@@ -2,9 +2,14 @@
 
 A SMTP test application built with Go and Vue.js that acts as a SMTP server and provides a web interface for viewing emails. Meant to be used for testing email delivery and test environment.
 
+It has two operating modes:
+
+- **Capture-only** (the default): accepts mail, stores it, shows it in the webmail UI. Nothing ever leaves the system. This is the original mode described throughout this README.
+- **Relay-with-approval** (opt-in): mail is held in a review queue instead of being delivered; an authorized reviewer inspects it in the portal and presses **Send Now** to relay it through a real upstream provider (e.g. Gmail). See [Relay Mode](#-relay-mode) below. This is meant for situations like an AI agent sending mail that must be reviewed by a human before it reaches a real recipient.
+
 ## ✨ Features
 
-- **📧 SMTP Server**: Listens on port 25 for incoming emails (no TLS required)
+- **📧 SMTP Server**: Listens on port 25 for incoming emails (no TLS required for submission)
 - **🔒 SMTP Authentication**: Requires a configured username/password (`AUTH PLAIN`) before accepting mail
 - **🌐 Web Interface**: Vue.js-based webmail with Tailwind CSS
 - **🔐 OAuth Authentication**: Google OAuth integration for secure login
@@ -12,6 +17,7 @@ A SMTP test application built with Go and Vue.js that acts as a SMTP server and 
 - **🗑️ Email Operations**: View and delete emails with a modern interface
 - **💾 SQLite Storage**: Lightweight database for email storage
 - **📱 Responsive Design**: Works on desktop and mobile devices
+- **✅ Relay Mode (opt-in)**: hold mail for human review and approval before relaying it to a real upstream SMTP provider — see [Relay Mode](#-relay-mode)
 
 ## 🖼️ Screenshot
 
@@ -142,6 +148,52 @@ smtp.SendMail("localhost:25", auth, "test@example.com", []string{"your-email@loc
 
 Configure your email client to send emails to `localhost:25` using your configured `SMTP_USERNAME`/`SMTP_PASSWORD`, with any recipient address ending in `@localhost`.
 
+## 🔁 Relay Mode
+
+Relay mode turns this from a mock server into a real relay, gated behind a human. It is off by default — a deployment that sets none of the `RELAY_*` variables below behaves exactly as described everywhere else in this README, and cannot deliver mail anywhere.
+
+**The idea**: an automated sender (an AI agent, a script, anything speaking SMTP) submits mail exactly as it always has. Instead of being delivered, the message is parked in a review queue. A reviewer signs into the portal, opens the message — full body, HTML rendered in an isolated sandbox, attachments previewable or downloadable — and either presses **Send Now** (relays it through a real upstream provider) or **Reject** (it is never delivered). Every decision is attributed and permanently audited.
+
+### Enabling it
+
+Add to your `.env` (see `env.example` for the full list with defaults):
+
+```env
+RELAY_ENABLED=true
+RELAY_HOST=smtp.gmail.com
+RELAY_PORT=587
+RELAY_TLS_MODE=starttls
+RELAY_USERNAME=you@gmail.com
+RELAY_PASSWORD=your_16_char_app_password
+RELAY_IDENTITY=you@gmail.com
+REVIEWER_EMAILS=alice@example.com,bob@example.com
+```
+
+For Gmail specifically: you need an **App Password**, which requires 2-Step Verification on the account — an ordinary account password will be refused. `REVIEWER_EMAILS` must match the address your OAuth provider returns at login.
+
+If `RELAY_ENABLED=true` but any required setting is missing — including an empty `REVIEWER_EMAILS`, since nobody could release queued mail — the process refuses to start and reports every missing setting at once, rather than starting into a state where approvals would silently fail.
+
+### What a reviewer sees and does
+
+Once enabled, an authorized reviewer sees a **Relay mode: ON** indicator and a **Review Queue** link in the header. The queue shows every pending message instance-wide (not scoped to any one recipient). Opening a message shows:
+
+- the sender the agent actually used, alongside the identity that will replace it in `From` when relayed;
+- every **envelope** recipient — including any Bcc'd address, explicitly flagged as hidden from the other recipients, so nothing can be delivered to an address the reviewer never saw;
+- the message body, with the HTML version rendered in a sandboxed, script-free iframe;
+- attachments, previewable inline for images/PDF/plain text and downloadable for everything else.
+
+Pressing **Send Now** relays synchronously — the response tells the reviewer whether it was delivered, and if not, whether the failure is safely retriable (**confirmed**: nothing went out) or came back with an unknown outcome (**indeterminate**: the message was transmitted but the acknowledgement never arrived). Retrying an indeterminate failure requires the reviewer to explicitly accept that a duplicate might be delivered.
+
+### Behind the scenes
+
+- The relayed `From` is always the configured `RELAY_IDENTITY`; the original sender is preserved in `Reply-To` (unless the sender already set one) so replies still reach them, and in the audit trail so attribution is never lost.
+- Relaying never creates a portal user account for an external recipient — queued messages have no owning user at all, and capture-only mode's existing behavior is completely unaffected.
+- All relay connections are encrypted (STARTTLS or implicit TLS) — there is no plaintext relay option.
+- Memory is bounded: the SQLite driver has no incremental blob I/O, so a whole message is held in memory per operation. `SMTP_MAX_CONCURRENT` and `RELAY_MAX_CONCURRENT_IO` cap how many such operations run at once; an inbound connection over the cap gets a standard, immediately retryable `421` rather than hanging.
+- Optional retention (`RETENTION_DAYS`, disabled by default) purges the *content* of messages that have reached a final state (sent/rejected) after N days, while keeping their metadata and full audit history forever. Pending or unresolved-failed messages are never purged regardless of age.
+
+Full configuration reference, the memory-sizing formula, and a step-by-step walkthrough live in [`specs/002-smtp-relay-approval/quickstart.md`](specs/002-smtp-relay-approval/quickstart.md).
+
 ## 🎯 Usage
 
 1. **Access the Webmail**: Go to http://localhost:3000
@@ -172,6 +224,22 @@ Configure your email client to send emails to `localhost:25` using your configur
 | `SMTP_USERNAME` | SMTP `AUTH PLAIN` username | Required |
 | `SMTP_PASSWORD` | SMTP `AUTH PLAIN` password | Required |
 | `FRONTEND_URL` | Frontend URL | `http://localhost:3000` |
+| `RELAY_ENABLED` | Enable relay-with-approval mode | `false` |
+| `RELAY_HOST` | Upstream SMTP host | Required if `RELAY_ENABLED=true` |
+| `RELAY_PORT` | Upstream SMTP port | `587` |
+| `RELAY_TLS_MODE` | `starttls` or `tls` (no plaintext option) | `starttls` |
+| `RELAY_USERNAME` | Upstream SMTP username | Required if `RELAY_ENABLED=true` |
+| `RELAY_PASSWORD` | Upstream SMTP password (e.g. a Gmail App Password) | Required if `RELAY_ENABLED=true` |
+| `RELAY_IDENTITY` | Address relayed mail's `From` is rewritten to | Required if `RELAY_ENABLED=true` |
+| `RELAY_TIMEOUT_SECONDS` | Per-attempt delivery timeout | `10` |
+| `RELAY_CA_CERT_FILE` | Extra CA cert for a self-hosted upstream | Optional |
+| `REVIEWER_EMAILS` | Comma-separated list of addresses allowed to review/send/reject | Required (non-empty) if `RELAY_ENABLED=true` |
+| `MAX_MESSAGE_BYTES` | Maximum accepted message size | `26214400` (25 MB) |
+| `SMTP_MAX_CONCURRENT` | Max concurrent inbound SMTP connections | `3` |
+| `SMTP_READ_TIMEOUT_SECONDS` | Inbound SMTP idle read timeout | `60` |
+| `SMTP_WRITE_TIMEOUT_SECONDS` | Inbound SMTP idle write timeout | `60` |
+| `RELAY_MAX_CONCURRENT_IO` | Max concurrent whole-message reads (send/preview/download) | `2` |
+| `RETENTION_DAYS` | Days after which terminal messages' content is purged; `0` disables purging | `0` |
 
 ### Ports
 
@@ -187,6 +255,7 @@ Configure your email client to send emails to `localhost:25` using your configur
 - OAuth authentication ensures only authorized users can access emails
 - JWT tokens are used for session management
 - Emails are soft-deleted (marked as deleted but not physically removed)
+- With relay mode enabled: upstream credentials are never exposed via the portal, any API response, or log output; only authenticated users whose address appears in `REVIEWER_EMAILS` can view the review queue or act on it — including for a message addressed to their own account; and all connections to the upstream provider are encrypted (no plaintext relay option)
 
 ## 🐛 Troubleshooting
 

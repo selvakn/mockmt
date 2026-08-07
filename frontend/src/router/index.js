@@ -3,12 +3,19 @@ import { useAuthStore } from '../stores/auth'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
 import AuthCallback from '../views/AuthCallback.vue'
+import ReviewQueue from '../views/ReviewQueue.vue'
 
 const routes = [
   {
     path: '/',
     name: 'Dashboard',
     component: Dashboard,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/review',
+    name: 'ReviewQueue',
+    component: ReviewQueue,
     meta: { requiresAuth: true }
   },
   {

@@ -20,8 +20,24 @@ func main() {
 		log.Fatal("SMTP authentication is not configured:", err)
 	}
 
+	relayConfig, err := mockmt.LoadRelayConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	mockmt.InitRelay(relayConfig)
+	mockmt.LogRelayStartupSummary(relayConfig)
+
 	if err := mockmt.InitDatabase(); err != nil {
 		log.Fatal("Failed to initialize database:", err)
+	}
+
+	if relayConfig.Enabled {
+		if settled, err := mockmt.SweepOrphanedSendingMessages(); err != nil {
+			log.Fatal("Failed to sweep orphaned sending messages:", err)
+		} else if settled > 0 {
+			log.Printf("Startup sweep: settled %d message(s) left in \"sending\" by a previous run as Failed-indeterminate", settled)
+		}
+		mockmt.StartRetentionTicker(relayConfig.RetentionDays)
 	}
 
 	go func() {

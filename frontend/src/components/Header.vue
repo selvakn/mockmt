@@ -25,6 +25,27 @@
               <span>{{ stats.total_emails }} emails</span>
             </div>
           </div>
+
+          <!-- Relay mode indicator: visible to any authenticated user so
+               nobody is ever unsure whether pressing a button in this
+               instance could reach a real person (FR-005). -->
+          <span
+            v-if="relayStatus?.relay_enabled"
+            class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+            title="This instance can relay approved mail to real recipients"
+          >
+            Relay mode: ON
+          </span>
+
+          <!-- Review queue link: only for authorized reviewers, and only
+               when relay mode is actually enabled (FR-002). -->
+          <router-link
+            v-if="relayStatus?.relay_enabled && relayStatus?.is_reviewer"
+            to="/review"
+            class="text-sm font-medium text-primary-600 hover:text-primary-800"
+          >
+            Review Queue
+          </router-link>
         </div>
 
         <!-- User Menu -->
@@ -71,7 +92,7 @@
 <script>
 import { ref, onMounted, computed } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import api from '../services/api'
+import api, { getRelayStatus } from '../services/api'
 
 export default {
   name: 'Header',
@@ -79,6 +100,7 @@ export default {
     const authStore = useAuthStore()
     const showDropdown = ref(false)
     const stats = ref(null)
+    const relayStatus = ref(null)
 
     const user = computed(() => authStore.user)
 
@@ -96,13 +118,23 @@ export default {
       }
     }
 
+    const fetchRelayStatus = async () => {
+      try {
+        relayStatus.value = await getRelayStatus()
+      } catch (error) {
+        console.error('Failed to fetch relay status:', error)
+      }
+    }
+
     onMounted(() => {
       fetchStats()
+      fetchRelayStatus()
     })
 
     return {
       user,
       stats,
+      relayStatus,
       showDropdown,
       handleLogout
     }

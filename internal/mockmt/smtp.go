@@ -1,12 +1,15 @@
 package mockmt
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-sasl"
@@ -68,8 +71,31 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	return nil
 }
 
+// Data reads the complete message into memory before doing anything else,
+// then branches on the operating mode. Reading raw bytes first is what
+// makes relay mode possible at all (FR-008): the previous implementation
+// consumed the stream through mail.CreateReader and kept only the parsed
+// subject/text/html, discarding attachments and every other header, which
+// cannot be relayed faithfully. Capture-only mode's own parsing is
+// unchanged -- it now runs against a buffer instead of the live stream,
+// but produces identical results (FR-002).
 func (s *Session) Data(r io.Reader) error {
-	mr, err := mail.CreateReader(r)
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		log.Printf("Error reading message data: %v", err)
+		return err
+	}
+
+	if relayCfg != nil && relayCfg.Enabled {
+		return s.queueForReview(raw)
+	}
+	return s.captureMessage(raw)
+}
+
+// captureMessage is today's capture-only behaviour, byte-for-byte: parse
+// subject/text/html and store once per recipient via saveEmail.
+func (s *Session) captureMessage(raw []byte) error {
+	mr, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		log.Printf("Error creating mail reader: %v", err)
 		return err
@@ -123,6 +149,44 @@ func (s *Session) Data(r io.Reader) error {
 	return nil
 }
 
+// queueForReview is relay-mode ingest (FR-007): the message is stored
+// complete and durably, and is acknowledged to the client only once that
+// commit succeeds (FR-009). It is never delivered here -- that happens
+// only when a reviewer presses Send Now.
+func (s *Session) queueForReview(raw []byte) error {
+	meta, err := parseMessageMetadata(raw)
+	if err != nil {
+		log.Printf("Error parsing message metadata: %v", err)
+		return err
+	}
+
+	mr, err := mail.CreateReader(bytes.NewReader(raw))
+	if err != nil {
+		log.Printf("Error parsing message header: %v", err)
+		return err
+	}
+
+	headerFrom := ""
+	if from, ferr := mr.Header.AddressList("From"); ferr == nil && len(from) > 0 {
+		headerFrom = from[0].String()
+	}
+
+	hidden := hiddenRecipients(&mr.Header, s.to)
+	recipients := make([]queuedRecipientInput, len(s.to))
+	for i, to := range s.to {
+		recipients[i] = queuedRecipientInput{Address: to, Hidden: hidden[to]}
+	}
+
+	id, err := insertQueuedMessage(s.from, headerFrom, meta.Subject, raw, len(meta.Attachments) > 0, recipients)
+	if err != nil {
+		log.Printf("Error queueing message for review: %v", err)
+		return err
+	}
+
+	log.Printf("Message queued for review: id=%d, from=%s, recipients=%d", id, s.from, len(s.to))
+	return nil
+}
+
 func (s *Session) Reset() {
 	s.from = ""
 	s.to = nil
@@ -148,6 +212,17 @@ func LoadSMTPCredentials() (string, string, error) {
 	return username, password, nil
 }
 
+// Defaults applied when StartSMTPServer runs without InitRelay having been
+// called first. Production always calls InitRelay before starting the
+// SMTP server (main.go); these mirror LoadRelayConfig's own defaults so a
+// missing call fails safe rather than unlimited.
+const (
+	defaultSMTPMaxConcurrent       = 3
+	defaultMaxMessageBytes   int64 = 26214400
+	defaultSMTPReadTimeout         = 60 * time.Second
+	defaultSMTPWriteTimeout        = 60 * time.Second
+)
+
 func StartSMTPServer() error {
 	username, password, err := LoadSMTPCredentials()
 	if err != nil {
@@ -163,8 +238,34 @@ func StartSMTPServer() error {
 	s.Domain = "localhost"
 	s.AllowInsecureAuth = true
 
-	log.Printf("Starting SMTP server at %s", s.Addr)
-	return s.ListenAndServe()
+	maxConns := defaultSMTPMaxConcurrent
+	s.MaxMessageBytes = defaultMaxMessageBytes
+	s.ReadTimeout = defaultSMTPReadTimeout
+	s.WriteTimeout = defaultSMTPWriteTimeout
+	// MaxRecipients is deliberately left at its zero value (unlimited),
+	// matching today's behaviour -- no requirement calls for a specific
+	// recipient cap, and go-smtp treats 0 as "no limit".
+
+	if relayCfg != nil {
+		if relayCfg.SMTPMaxConcurrent > 0 {
+			maxConns = relayCfg.SMTPMaxConcurrent
+		}
+		s.MaxMessageBytes = relayCfg.MaxMessageBytes
+		s.ReadTimeout = time.Duration(relayCfg.SMTPReadTimeoutSeconds) * time.Second
+		s.WriteTimeout = time.Duration(relayCfg.SMTPWriteTimeoutSeconds) * time.Second
+	}
+
+	l, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return err
+	}
+
+	// The connection cap without the read/write timeouts above would be a
+	// regression, not an improvement: go-smtp applies no idle timeout by
+	// default, so a handful of idle connections would occupy every slot
+	// and block all submission indefinitely (research R16).
+	log.Printf("Starting SMTP server at %s (max %d concurrent connections)", s.Addr, maxConns)
+	return s.Serve(newLimitedListener(l, maxConns))
 }
 
 func stripHTML(html string) string {
